@@ -1,0 +1,213 @@
+{
+  "projectType": "data-platform",
+  "projectName": "Apache Iceberg",
+  "projectDescription": "High-performance open table format for huge analytic datasets with ACID transactions and time travel",
+  "theme": "aspen",
+  "primaryColor": "#d7242a",
+  "lightColor": "#6c6c71",
+  "darkColor": "#3080be",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "java-api-quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/table-format",
+              "concepts/schemas",
+              "concepts/partitioning",
+              "concepts/evolution",
+              "concepts/branching",
+              "concepts/reliability",
+              "concepts/performance"
+            ]
+          },
+          {
+            "group": "Table Operations",
+            "pages": [
+              "operations/reading-tables",
+              "operations/writing-tables",
+              "operations/maintenance",
+              "operations/metrics-reporting"
+            ]
+          },
+          {
+            "group": "Query Engines",
+            "pages": [
+              "engines/spark/overview",
+              "engines/spark/getting-started",
+              "engines/spark/ddl",
+              "engines/spark/queries",
+              "engines/spark/writes",
+              "engines/spark/configuration",
+              "engines/spark/procedures",
+              "engines/spark/structured-streaming",
+              "engines/flink/overview",
+              "engines/flink/connector",
+              "engines/flink/ddl",
+              "engines/flink/queries",
+              "engines/flink/writes",
+              "engines/flink/configuration",
+              "engines/flink/maintenance",
+              "engines/hive/overview"
+            ]
+          },
+          {
+            "group": "Catalogs & Storage",
+            "pages": [
+              "catalogs/overview",
+              "catalogs/custom-catalog",
+              "catalogs/jdbc",
+              "catalogs/nessie",
+              "storage/aws",
+              "storage/dell",
+              "storage/fileio"
+            ]
+          },
+          {
+            "group": "Advanced Features",
+            "pages": [
+              "advanced/encryption",
+              "advanced/view-configuration"
+            ]
+          },
+          {
+            "group": "Migration",
+            "pages": [
+              "migration/table-migration",
+              "migration/hive-migration",
+              "migration/delta-lake-migration"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/kafka-connect"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/overview",
+              "api/table",
+              "api/schema",
+              "api/partition-spec",
+              "api/sort-order",
+              "api/snapshot"
+            ]
+          },
+          {
+            "group": "Catalog API",
+            "pages": [
+              "api/catalog/catalog",
+              "api/catalog/namespace",
+              "api/catalog/table-identifier"
+            ]
+          },
+          {
+            "group": "Scan API",
+            "pages": [
+              "api/scan/table-scan",
+              "api/scan/batch-scan",
+              "api/scan/incremental-scan"
+            ]
+          },
+          {
+            "group": "Write API",
+            "pages": [
+              "api/write/append-files",
+              "api/write/overwrite-files",
+              "api/write/delete-files",
+              "api/write/row-delta"
+            ]
+          },
+          {
+            "group": "Actions API",
+            "pages": [
+              "api/actions/overview",
+              "api/actions/expire-snapshots",
+              "api/actions/rewrite-data-files",
+              "api/actions/rewrite-manifests",
+              "api/actions/delete-orphan-files",
+              "api/actions/compute-table-stats"
+            ]
+          },
+          {
+            "group": "REST Catalog API",
+            "pages": [
+              "api/rest/overview",
+              "api/rest/configuration",
+              "api/rest/namespaces",
+              "api/rest/tables",
+              "api/rest/views"
+            ]
+          },
+          {
+            "group": "Types & Expressions",
+            "pages": [
+              "api/types",
+              "api/expressions",
+              "api/transforms"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "ACID transactions with snapshot isolation",
+    "Time travel and version rollback",
+    "Schema evolution without side effects",
+    "Hidden partitioning for correctness",
+    "Partition layout evolution",
+    "Advanced filtering with metadata pruning",
+    "Multi-engine support (Spark, Flink, Trino, Hive, Presto)",
+    "REST Catalog API",
+    "Table maintenance actions",
+    "Concurrent write operations with optimistic concurrency",
+    "Encryption support",
+    "Multiple file formats (Parquet, ORC, Avro)"
+  ],
+  "publicApiSurface": [
+    "Table",
+    "Schema",
+    "PartitionSpec",
+    "SortOrder",
+    "Snapshot",
+    "TableScan",
+    "BatchScan",
+    "IncrementalScan",
+    "AppendFiles",
+    "OverwriteFiles",
+    "DeleteFiles",
+    "RowDelta",
+    "Transaction",
+    "Catalog",
+    "Namespace",
+    "TableIdentifier",
+    "ExpireSnapshots",
+    "RewriteDataFiles",
+    "RewriteManifests",
+    "DeleteOrphanFiles",
+    "ComputeTableStats",
+    "MigrateTable",
+    "Expression",
+    "Transform",
+    "Types",
+    "REST Catalog Endpoints"
+  ]
+}
