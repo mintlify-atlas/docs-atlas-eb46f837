@@ -1,0 +1,390 @@
+---
+title: "Partitioning"
+description: "Hidden partitioning and partition transforms in Apache Iceberg"
+---
+
+Partitioning is a technique for organizing data files to make queries faster by grouping similar rows together. Iceberg introduces **hidden partitioning**, which solves common problems with traditional partitioning approaches.
+
+## What is Partitioning?
+
+Partitioning groups data into separate files based on column values:
+
+```sql
+-- Query with time range filter
+SELECT level, message FROM logs
+WHERE event_time BETWEEN '2024-03-01 10:00:00' AND '2024-03-01 12:00:00';
+```
+
+If the `logs` table is partitioned by date, Iceberg can skip reading files for other dates, making the query much faster.
+
+## Problems with Traditional Partitioning
+
+Traditional table formats like Hive have significant partitioning limitations:
+
+### User-Maintained Partition Values
+
+In Hive, partitions are explicit columns that users must populate:
+
+```sql
+-- Hive: Users must provide partition values
+INSERT INTO logs PARTITION (event_date)
+  SELECT level, message, event_time, 
+         format_time(event_time, 'YYYY-MM-dd') -- User must derive partition value
+  FROM source;
+```
+
+This causes problems:
+- **No validation** - Wrong formats produce silent errors ("2024-03-01" vs "20240301")
+- **Wrong source column** - Using a different timestamp field produces incorrect results
+- **User burden** - Every write must calculate partition values correctly
+
+### Partition-Dependent Queries
+
+Hive queries must filter on partition columns for performance:
+
+```sql
+-- Hive: Must filter both time AND partition column
+SELECT level, count(1) FROM logs
+WHERE event_time BETWEEN '2024-03-01 10:00:00' AND '2024-03-01 12:00:00'
+  AND event_date = '2024-03-01'; -- Required for performance!
+```
+
+Without the partition filter, Hive scans every file because it doesn't know `event_time` relates to `event_date`.
+
+### Inflexible Partitioning
+
+Changing partition layout requires creating a new table and rewriting queries:
+- Daily partitions → Hourly partitions requires a new table
+- All queries must be rewritten for the new partition structure
+- Historical data migration is expensive
+
+## Iceberg's Hidden Partitioning
+
+<Note>
+Iceberg handles partition value derivation automatically and keeps partitioning separate from query logic.
+</Note>
+
+Iceberg produces partition values by applying transforms to column values:
+
+```sql
+-- Create table with partition spec (using Spark SQL)
+CREATE TABLE logs (
+  level string,
+  message string,
+  event_time timestamp
+)
+USING iceberg
+PARTITIONED BY (days(event_time));
+
+-- Write data - partition values calculated automatically
+INSERT INTO logs VALUES 
+  ('INFO', 'Started', timestamp '2024-03-01 10:30:00'),
+  ('ERROR', 'Failed', timestamp '2024-03-01 14:22:00');
+
+-- Query - no partition filter needed!
+SELECT level, message FROM logs
+WHERE event_time BETWEEN '2024-03-01 10:00:00' AND '2024-03-01 12:00:00';
+```
+
+Benefits:
+- **Automatic derivation** - Partition values are calculated correctly every time
+- **Automatic filtering** - Predicates on source columns automatically filter partitions
+- **Evolution** - Partition layout can change without rewriting queries
+
+## Partition Transforms
+
+Iceberg provides built-in transforms for creating partition values:
+
+### Identity Transform
+
+Uses the source value unchanged:
+
+```sql
+-- Partition by exact region value
+PARTITIONED BY (region)
+```
+
+### Temporal Transforms
+
+Extract date/time components from timestamps:
+
+<CodeGroup>
+```sql Year
+-- Partition by year (years from 1970)
+PARTITIONED BY (years(event_time))
+```
+
+```sql Month  
+-- Partition by month (months from 1970-01-01)
+PARTITIONED BY (months(event_time))
+```
+
+```sql Day
+-- Partition by day (days from 1970-01-01)  
+PARTITIONED BY (days(event_time))
+```
+
+```sql Hour
+-- Partition by hour (hours from 1970-01-01 00:00:00)
+PARTITIONED BY (hours(event_time))
+```
+</CodeGroup>
+
+Supported on: `date`, `timestamp`, `timestamptz`, `timestamp_ns`, `timestamptz_ns`
+
+### Bucket Transform
+
+Hash values into a fixed number of buckets:
+
+```sql
+-- Partition user_id into 16 buckets
+PARTITIONED BY (bucket(16, user_id))
+```
+
+Uses Murmur3 hash to evenly distribute values. Useful for:
+- High-cardinality columns (user IDs, device IDs)
+- Evenly distributing data across partitions
+- Controlling partition count
+
+Supported on: `int`, `long`, `decimal`, `date`, `time`, `timestamp`, `timestamptz`, `string`, `uuid`, `fixed`, `binary`
+
+### Truncate Transform
+
+Truncate values to a specified width:
+
+<CodeGroup>
+```sql String Truncation
+-- First 4 characters of product_code
+PARTITIONED BY (truncate(4, product_code))
+-- "WIDGET-12345" → "WIDGE"
+```
+
+```sql Number Truncation
+-- Round integers to nearest 10
+PARTITIONED BY (truncate(10, quantity))
+-- 1 → 0, 15 → 10, 127 → 120
+```
+
+```sql Binary Truncation
+-- First 8 bytes of binary data
+PARTITIONED BY (truncate(8, binary_column))
+```
+</CodeGroup>
+
+Supported on: `int`, `long`, `decimal`, `string`, `binary`
+
+## Multi-Column Partitioning
+
+Tables can partition by multiple columns:
+
+```sql
+-- Partition by region and day
+CREATE TABLE events (
+  event_id bigint,
+  event_time timestamp,
+  region string,
+  data string
+)
+USING iceberg  
+PARTITIONED BY (region, days(event_time));
+```
+
+This creates a hierarchical partition structure:
+```
+region=us/
+  event_time_day=2024-03-01/
+    data-file-1.parquet
+  event_time_day=2024-03-02/  
+    data-file-2.parquet
+region=eu/
+  event_time_day=2024-03-01/
+    data-file-3.parquet
+```
+
+## Partition Pruning
+
+Iceberg automatically converts column predicates to partition predicates:
+
+```sql
+-- User writes this query:
+SELECT * FROM events
+WHERE event_time >= '2024-03-01' 
+  AND event_time < '2024-03-02'
+  AND region = 'us';
+
+-- Iceberg automatically derives partition filters:
+-- - days(event_time) = 18718 (days since 1970 for 2024-03-01)
+-- - region = 'us'
+-- Then scans only matching files
+```
+
+This works because:
+1. Iceberg knows the transform relationship (`days(event_time)`)
+2. Predicates on `event_time` are converted to predicates on the partition value
+3. Manifest metadata contains partition value ranges
+4. Non-matching manifests and files are skipped
+
+## Partition Metadata
+
+Iceberg tracks rich partition metadata for pruning:
+
+**Manifest List Level:**
+- Min/max values for each partition field across all files in a manifest
+- Enables skipping entire manifests
+
+**Manifest File Level:**  
+- Exact partition values for each data file
+- Column-level statistics (value counts, null counts, min/max)
+- Enables skipping individual data files
+
+Example manifest list metadata:
+```json
+{
+  "manifest-path": "s3://bucket/db/table/metadata/snap-123-1.avro",
+  "partitions": [
+    {
+      "contains-null": false,
+      "contains-nan": false,
+      "lower-bound": 18718,  // 2024-03-01 in days since epoch
+      "upper-bound": 18718
+    },
+    {
+      "contains-null": false,  
+      "lower-bound": "us",
+      "upper-bound": "us"
+    }
+  ]
+}
+```
+
+## Creating Partition Specs
+
+### Using Spark SQL
+
+```sql
+-- Single partition field
+CREATE TABLE events (
+  id bigint,
+  ts timestamp,
+  data string
+) USING iceberg
+PARTITIONED BY (days(ts));
+
+-- Multiple partition fields  
+CREATE TABLE logs (
+  level string,
+  ts timestamp,
+  message string
+) USING iceberg
+PARTITIONED BY (level, hours(ts));
+
+-- With custom names
+CREATE TABLE metrics (
+  value double,
+  ts timestamp
+) USING iceberg  
+PARTITIONED BY (ts_day AS days(ts));
+```
+
+### Using Java API
+
+```java
+import org.apache.iceberg.PartitionSpec;
+import static org.apache.iceberg.expressions.Expressions.*;
+
+// Single field partition spec
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+  .day("event_time")
+  .build();
+
+// Multiple fields
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+  .identity("region")
+  .hour("event_time") 
+  .build();
+
+// Using transforms
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+  .bucket("user_id", 16)
+  .truncate("product_code", 4)
+  .build();
+```
+
+## Unpartitioned Tables
+
+Tables can be created without partitioning:
+
+```sql
+-- No PARTITIONED BY clause
+CREATE TABLE small_table (
+  id bigint,
+  data string  
+) USING iceberg;
+```
+
+Unpartitioned tables:
+- All data in a single logical partition
+- Simpler for small tables or streaming workloads
+- Can still use column statistics for file pruning
+- Can be partitioned later via [partition evolution](/concepts/evolution)
+
+## Partitioning Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose the Right Granularity">
+    - Too few partitions (yearly) → files too large, poor pruning
+    - Too many partitions (per second) → too many small files, metadata overhead
+    - Start coarse (daily/monthly) and refine with partition evolution
+    - Target partition sizes of 500MB to a few GB
+  </Accordion>
+
+  <Accordion title="Partition High-Selectivity Columns">
+    - Choose columns commonly used in WHERE clauses
+    - Time-based partitioning is most common (date, timestamp)
+    - Consider query patterns when selecting partition columns
+  </Accordion>
+
+  <Accordion title="Use Bucket for High Cardinality">
+    - Don't use identity partitioning on user_id (millions of partitions)
+    - Use bucket(N, user_id) instead to control partition count
+    - Typical bucket counts: 16, 32, 64, 128
+  </Accordion>
+
+  <Accordion title="Avoid Over-Partitioning">
+    - More partitions ≠ better performance
+    - Each partition adds metadata overhead  
+    - Small files (< 100MB) hurt read performance
+    - Use compaction to manage file sizes
+  </Accordion>
+</AccordionGroup>
+
+## Hidden Partitioning Benefits
+
+<CardGroup cols={2}>
+  <Card title="Correctness" icon="check">
+    Partition values are always derived correctly from source data
+  </Card>
+  
+  <Card title="Simplicity" icon="feather">
+    Users query on actual columns, not partition values
+  </Card>
+  
+  <Card title="Evolution" icon="seedling">
+    Partition layout can change without breaking queries
+  </Card>
+  
+  <Card title="Performance" icon="bolt">
+    Automatic partition pruning optimizes all compatible queries
+  </Card>
+</CardGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Partition Evolution" icon="code-branch" href="/concepts/evolution#partition-evolution">
+    Learn how to change partition specs over time
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="/concepts/performance">
+    Understand how partitioning affects query performance
+  </Card>
+</CardGroup>

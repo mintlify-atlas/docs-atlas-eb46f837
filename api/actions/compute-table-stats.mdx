@@ -1,0 +1,289 @@
+---
+title: ComputeTableStats Action
+description: API reference for the ComputeTableStats action that collects and stores table statistics
+---
+
+# ComputeTableStats
+
+The `ComputeTableStats` action collects statistics for an Iceberg table and writes them to Puffin files. These statistics help query engines make better optimization decisions.
+
+## Interface
+
+```java
+public interface ComputeTableStats extends Action<ComputeTableStats, ComputeTableStats.Result>
+```
+
+## Overview
+
+Table statistics provide valuable information for query optimization, including:
+- Column value distributions
+- Distinct value counts (NDV)
+- Null counts
+- Min/max values
+- Data sketches for cardinality estimation
+
+The ComputeTableStats action:
+- Analyzes data files in the table
+- Computes statistics for specified columns
+- Stores results in Puffin format
+- Associates statistics with specific snapshots
+
+## Methods
+
+### columns
+
+Specify which columns to collect statistics for.
+
+```java
+ComputeTableStats columns(String... columns)
+```
+
+**Parameters:**
+- `columns` - Variable number of column names to analyze
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Compute stats for specific columns
+action.columns("user_id", "event_type", "timestamp");
+```
+
+<Note>
+If not specified, statistics are collected for all columns in the table.
+</Note>
+
+### snapshot
+
+Specify which snapshot to compute statistics for.
+
+```java
+ComputeTableStats snapshot(long snapshotId)
+```
+
+**Parameters:**
+- `snapshotId` - The ID of the snapshot to analyze
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Compute stats for a specific snapshot
+action.snapshot(1234567890L);
+```
+
+<Note>
+If not specified, statistics are computed for the current snapshot.
+</Note>
+
+## Result
+
+The `Result` interface provides information about the computed statistics.
+
+### Methods
+
+```java
+interface Result {
+  StatisticsFile statisticsFile();
+}
+```
+
+**statisticsFile()**
+
+Returns the statistics file containing the computed statistics, or `null` if no statistics were collected.
+
+## Usage Examples
+
+### Basic Statistics Collection
+
+```java
+// Compute stats for all columns in current snapshot
+ComputeTableStats.Result result = actions
+  .computeTableStats(table)
+  .execute();
+
+StatisticsFile statsFile = result.statisticsFile();
+if (statsFile != null) {
+  System.out.println("Statistics written to: " + statsFile.path());
+  System.out.println("Blob count: " + statsFile.blobMetadata().size());
+}
+```
+
+### Specific Columns
+
+```java
+// Compute stats for specific columns only
+ComputeTableStats.Result result = actions
+  .computeTableStats(table)
+  .columns("user_id", "product_id", "purchase_amount")
+  .execute();
+
+if (result.statisticsFile() != null) {
+  System.out.println("Statistics computed for selected columns");
+}
+```
+
+### Specific Snapshot
+
+```java
+// Compute stats for a historical snapshot
+long snapshotId = table.currentSnapshot().snapshotId();
+
+ComputeTableStats.Result result = actions
+  .computeTableStats(table)
+  .snapshot(snapshotId)
+  .execute();
+```
+
+### With Column Selection
+
+```java
+// Compute stats for frequently queried columns
+ComputeTableStats.Result result = actions
+  .computeTableStats(table)
+  .columns(
+    "date",
+    "customer_id",
+    "region",
+    "product_category"
+  )
+  .execute();
+
+StatisticsFile statsFile = result.statisticsFile();
+if (statsFile != null) {
+  System.out.println("Stats file snapshot: " + statsFile.snapshotId());
+  System.out.println("File size: " + statsFile.fileSizeInBytes() + " bytes");
+}
+```
+
+### Periodic Statistics Update
+
+```java
+// Update statistics after significant data changes
+public void updateTableStats(Table table, Actions actions) {
+  Snapshot current = table.currentSnapshot();
+  
+  // Only compute if there are enough new records
+  long recordsSinceLastStats = getRecordsSinceLastStats(table);
+  if (recordsSinceLastStats > 1_000_000) {
+    ComputeTableStats.Result result = actions
+      .computeTableStats(table)
+      .snapshot(current.snapshotId())
+      .execute();
+    
+    if (result.statisticsFile() != null) {
+      System.out.println("Statistics updated for " + recordsSinceLastStats + " new records");
+    }
+  }
+}
+```
+
+## Statistics File Format
+
+The action stores statistics in Puffin files, which contain:
+
+- **Blob metadata**: Information about each statistic
+- **Statistics data**: Actual statistical values and sketches
+- **Snapshot association**: Link to the analyzed snapshot
+
+### Accessing Statistics
+
+```java
+ComputeTableStats.Result result = actions
+  .computeTableStats(table)
+  .columns("user_id")
+  .execute();
+
+StatisticsFile statsFile = result.statisticsFile();
+if (statsFile != null) {
+  System.out.println("Path: " + statsFile.path());
+  System.out.println("Snapshot ID: " + statsFile.snapshotId());
+  System.out.println("Size: " + statsFile.fileSizeInBytes());
+  
+  // Access blob metadata
+  statsFile.blobMetadata().forEach(blob -> {
+    System.out.println("  Type: " + blob.type());
+    System.out.println("  Fields: " + blob.fields());
+  });
+}
+```
+
+## When to Compute Statistics
+
+Consider running ComputeTableStats when:
+
+1. **After large data loads**: New data may change value distributions
+2. **Before important queries**: Ensure optimizers have current information
+3. **On a schedule**: Regular updates for frequently changing tables
+4. **After schema evolution**: New columns need statistics
+5. **Performance degradation**: Outdated statistics may cause poor plans
+
+## Best Practices
+
+1. **Select important columns**: Focus on columns used in joins, filters, and aggregations
+
+```java
+// Prioritize columns used in query predicates
+action.columns(
+  "partition_date",    // Partition key
+  "customer_id",       // Join key
+  "status",            // Filter column
+  "amount"             // Aggregation column
+);
+```
+
+2. **Update regularly**: Schedule periodic statistics updates
+
+3. **Monitor statistics age**: Track when statistics were last computed
+
+4. **Consider cost vs. benefit**: Statistics computation can be expensive for large tables
+
+5. **Use with query optimization**: Ensure your query engine uses Iceberg statistics
+
+## Performance Considerations
+
+### Costs
+- Reads all data files for analyzed columns
+- Computes aggregations and sketches
+- Writes statistics files to storage
+- Can be time-consuming for large tables
+
+### Optimization Tips
+- Limit to frequently queried columns
+- Run during off-peak hours
+- Use snapshot parameter to avoid re-computing for same data
+- Consider incremental statistics updates
+
+## Configuration Options
+
+While not shown in the interface, implementations may support additional options:
+
+```java
+ComputeTableStats.Result result = actions
+  .computeTableStats(table)
+  .columns("user_id", "event_type")
+  .option("statistics-output-location", "s3://my-bucket/stats/")
+  .option("max-statistics-size", "100MB")
+  .execute();
+```
+
+Check your specific Actions implementation for available options.
+
+## Statistics and Query Optimization
+
+Statistics help query engines:
+- **Estimate cardinalities**: Choose optimal join orders
+- **Skip data files**: Prune files based on min/max values
+- **Optimize aggregations**: Pre-aggregate when beneficial
+- **Choose algorithms**: Select hash vs. sort-based operations
+
+<Tip>
+Combine table statistics with partition pruning and manifest filtering for best query performance.
+</Tip>
+
+## Related
+
+- [Puffin File Format](/formats/puffin) - Statistics file format specification
+- [Query Optimization](/concepts/query-optimization) - How statistics improve queries
+- [Table Metadata](/concepts/metadata) - Understanding table metadata structure
+- [RewriteDataFiles](/api/actions/rewrite-data-files) - Data optimization actions

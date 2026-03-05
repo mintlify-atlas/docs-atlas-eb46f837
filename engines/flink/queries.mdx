@@ -1,0 +1,314 @@
+---
+title: Querying with Flink
+description: Read data from Iceberg tables using Flink SQL and DataStream API
+---
+
+Iceberg supports both streaming and batch reads with Apache Flink's DataStream API and Table API.
+
+## Reading with SQL
+
+Iceberg supports both streaming and batch read in Flink. Execute the following SQL command to switch execution mode:
+
+```sql
+-- Execute the flink job in streaming mode for current session context
+SET execution.runtime-mode = streaming;
+
+-- Execute the flink job in batch mode for current session context
+SET execution.runtime-mode = batch;
+```
+
+### Batch Read
+
+Submit a Flink batch job:
+
+```sql
+-- Execute the flink job in batch mode for current session context
+SET execution.runtime-mode = batch;
+SELECT * FROM sample;
+```
+
+### Streaming Read
+
+Iceberg supports processing incremental data in Flink streaming jobs which starts from a historical snapshot:
+
+```sql
+-- Submit the flink job in streaming mode for current session.
+SET execution.runtime-mode = streaming;
+
+-- Enable this switch because streaming read SQL will provide options in SQL hint.
+SET table.dynamic-table-options.enabled=true;
+
+-- Read all records from current snapshot, then read incremental data.
+SELECT * FROM sample /*+ OPTIONS('streaming'='true', 'monitor-interval'='1s')*/ ;
+
+-- Read incremental data starting from snapshot-id (records from this snapshot excluded).
+SELECT * FROM sample /*+ OPTIONS(
+  'streaming'='true',
+  'monitor-interval'='1s',
+  'start-snapshot-id'='3821550127947089987'
+)*/ ;
+```
+
+<Note>
+See [read options](/engines/flink/configuration#read-options) for more configuration details.
+</Note>
+
+### FLIP-27 Source for SQL
+
+To opt in or out of the [FLIP-27 source](https://cwiki.apache.org/confluence/display/FLINK/FLIP-27%3A+Refactor+Source+Interface):
+
+```sql
+-- Opt out the FLIP-27 source.
+-- Default is false for Flink 1.19 and below, and true for Flink 1.20 and above.
+SET table.exec.iceberg.use-flip27-source = false;
+```
+
+### Reading Branches and Tags
+
+Branches and tags can be read via SQL by specifying options:
+
+```sql
+-- Read from branch b1
+SELECT * FROM table /*+ OPTIONS('branch'='b1') */ ;
+
+-- Read from tag t1
+SELECT * FROM table /*+ OPTIONS('tag'='t1') */;
+
+-- Incremental scan from tag t1 to tag t2
+SELECT * FROM table /*+ OPTIONS(
+  'streaming'='true',
+  'monitor-interval'='1s',
+  'start-tag'='t1',
+  'end-tag'='t2'
+) */;
+```
+
+## Reading with DataStream
+
+### Batch Read
+
+This example reads all records from an Iceberg table and prints them to stdout:
+
+```java
+StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment();
+TableLoader tableLoader = TableLoader.fromHadoopTable("hdfs://nn:8020/warehouse/path");
+
+DataStream<RowData> batch = FlinkSource.forRowData()
+     .env(env)
+     .tableLoader(tableLoader)
+     .streaming(false)
+     .build();
+
+// Print all records to stdout.
+batch.print();
+
+// Submit and execute this batch read job.
+env.execute("Test Iceberg Batch Read");
+```
+
+### Streaming Read
+
+This example reads incremental records starting from a specific snapshot:
+
+```java
+StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment();
+TableLoader tableLoader = TableLoader.fromHadoopTable("hdfs://nn:8020/warehouse/path");
+
+DataStream<RowData> stream = FlinkSource.forRowData()
+     .env(env)
+     .tableLoader(tableLoader)
+     .streaming(true)
+     .startSnapshotId(3821550127947089987L)
+     .build();
+
+// Print all records to stdout.
+stream.print();
+
+// Submit and execute this streaming read job.
+env.execute("Test Iceberg Streaming Read");
+```
+
+<Tip>
+See the [FlinkSource#Builder](https://iceberg.apache.org/javadoc/1.4.0/org/apache/iceberg/flink/source/FlinkSource.html) for more options.
+</Tip>
+
+## FLIP-27 Source (DataStream)
+
+The [FLIP-27 source interface](https://cwiki.apache.org/confluence/display/FLINK/FLIP-27%3A+Refactor+Source+Interface) was introduced in Flink 1.12. It aims to solve several shortcomings of the old `SourceFunction` interface.
+
+### Batch Read with FLIP-27
+
+```java
+StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment();
+TableLoader tableLoader = TableLoader.fromHadoopTable("hdfs://nn:8020/warehouse/path");
+
+IcebergSource<RowData> source = IcebergSource.forRowData()
+    .tableLoader(tableLoader)
+    .assignerFactory(new SimpleSplitAssignerFactory())
+    .build();
+
+DataStream<RowData> batch = env.fromSource(
+    source,
+    WatermarkStrategy.noWatermarks(),
+    "My Iceberg Source",
+    TypeInformation.of(RowData.class));
+
+// Print all records to stdout.
+batch.print();
+
+// Submit and execute this batch read job.
+env.execute("Test Iceberg Batch Read");
+```
+
+### Streaming Read with FLIP-27
+
+This example starts streaming read from the latest table snapshot (inclusive). Every 60s, it polls the Iceberg table to discover new append-only snapshots:
+
+```java
+StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment();
+TableLoader tableLoader = TableLoader.fromHadoopTable("hdfs://nn:8020/warehouse/path");
+
+IcebergSource source = IcebergSource.forRowData()
+    .tableLoader(tableLoader)
+    .assignerFactory(new SimpleSplitAssignerFactory())
+    .streaming(true)
+    .streamingStartingStrategy(StreamingStartingStrategy.INCREMENTAL_FROM_LATEST_SNAPSHOT)
+    .monitorInterval(Duration.ofSeconds(60))
+    .build();
+
+DataStream<RowData> stream = env.fromSource(
+    source,
+    WatermarkStrategy.noWatermarks(),
+    "My Iceberg Source",
+    TypeInformation.of(RowData.class));
+
+// Print all records to stdout.
+stream.print();
+
+// Submit and execute this streaming read job.
+env.execute("Test Iceberg Streaming Read");
+```
+
+<Warning>
+CDC read is not supported yet.
+</Warning>
+
+### Reading Branches and Tags with DataStream
+
+Branches and tags can also be read via the DataStream API:
+
+```java
+StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironment();
+TableLoader tableLoader = TableLoader.fromHadoopTable("hdfs://nn:8020/warehouse/path");
+
+// Read from branch
+DataStream<RowData> batch = FlinkSource.forRowData()
+    .env(env)
+    .tableLoader(tableLoader)
+    .branch("test-branch")
+    .streaming(false)
+    .build();
+
+// Read from tag
+DataStream<RowData> batch = FlinkSource.forRowData()
+    .env(env)
+    .tableLoader(tableLoader)
+    .tag("test-tag")
+    .streaming(false)
+    .build();
+
+// Streaming read from start-tag
+DataStream<RowData> stream = FlinkSource.forRowData()
+    .env(env)
+    .tableLoader(tableLoader)
+    .streaming(true)
+    .startTag("test-tag")
+    .build();
+```
+
+## Inspecting Tables
+
+To inspect a table's history, snapshots, and other metadata, Iceberg supports metadata tables.
+
+<Note>
+Metadata tables are identified by adding the metadata table name after the original table name. For example, history for `db.table` is read using `db.table$history`.
+</Note>
+
+### History
+
+To show table history:
+
+```sql
+SELECT * FROM prod.db.table$history;
+```
+
+| made_current_at | snapshot_id | parent_id | is_current_ancestor |
+| --- | --- | --- | --- |
+| 2019-02-08 03:29:51.215 | 5781947118336215154 | NULL | true |
+| 2019-02-08 03:47:55.948 | 5179299526185056830 | 5781947118336215154 | true |
+| 2019-02-09 16:24:30.13 | 296410040247533544 | 5179299526185056830 | false |
+| 2019-02-09 16:32:47.336 | 2999875608062437330 | 5179299526185056830 | true |
+
+<Info>
+This shows a commit that was rolled back. Snapshot 296410040247533544 and 2999875608062437330 have the same parent snapshot. Snapshot 296410040247533544 was rolled back and is not an ancestor of the current table state.
+</Info>
+
+### Snapshots
+
+To show the valid snapshots for a table:
+
+```sql
+SELECT * FROM prod.db.table$snapshots;
+```
+
+| committed_at | snapshot_id | parent_id | operation | manifest_list | summary |
+| --- | --- | --- | --- | --- | --- |
+| 2019-02-08 03:29:51.215 | 57897183625154 | null | append | s3://.../table/metadata/snap-57897183625154-1.avro | added-records: 2478404, total-records: 2478404 |
+
+### Files
+
+To show a table's current data files:
+
+```sql
+SELECT * FROM prod.db.table$files;
+```
+
+### Manifests
+
+To show a table's current file manifests:
+
+```sql
+SELECT * FROM prod.db.table$manifests;
+```
+
+### Partitions
+
+To show a table's current partitions:
+
+```sql
+SELECT * FROM prod.db.table$partitions;
+```
+
+### References
+
+To show a table's known snapshot references:
+
+```sql
+SELECT * FROM prod.db.table$refs;
+```
+
+| name | type | snapshot_id | max_reference_age_in_ms | min_snapshots_to_keep | max_snapshot_age_in_ms |
+| --- | --- | --- | --- | --- | --- |
+| main | BRANCH | 4686954189838128572 | 10 | 20 | 30 |
+| testTag | TAG | 4686954189838128572 | 10 | null | null |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Writes" icon="pen-to-square" href="/engines/flink/writes">
+    Write data to Iceberg tables
+  </Card>
+  <Card title="Configuration" icon="gear" href="/engines/flink/configuration">
+    Configure read options for Flink
+  </Card>
+</CardGroup>

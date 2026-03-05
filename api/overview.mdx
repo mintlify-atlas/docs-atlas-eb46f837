@@ -1,0 +1,143 @@
+---
+title: 'API Overview'
+description: 'Apache Iceberg Java API reference documentation'
+---
+
+# Apache Iceberg Java API
+
+The Apache Iceberg Java API provides a comprehensive set of interfaces for working with Iceberg tables. This reference documentation covers the core APIs used for table operations, schema management, partitioning, sorting, and snapshots.
+
+## Core APIs
+
+Iceberg's Java API is built around several key interfaces:
+
+### Table API
+
+The [`Table`](/api/table) interface is the primary entry point for interacting with Iceberg tables. It provides methods for:
+- Reading and writing data
+- Managing table metadata
+- Creating scans and queries
+- Updating schemas, partition specs, and sort orders
+- Managing snapshots and history
+
+### Schema API
+
+The [`Schema`](/api/schema) class defines the structure of table data. It provides:
+- Column definitions and types
+- Field identification and lookup
+- Schema evolution capabilities
+- Identifier field management
+
+### PartitionSpec API
+
+The [`PartitionSpec`](/api/partition-spec) class defines how data is partitioned in a table. It supports:
+- Multiple partition transforms (identity, bucket, truncate, year, month, day, hour)
+- Partition evolution
+- Efficient data organization
+
+### SortOrder API
+
+The [`SortOrder`](/api/sort-order) class defines how data files should be sorted. It provides:
+- Multi-column sorting
+- Custom sort directions and null ordering
+- Sort order evolution
+
+### Snapshot API
+
+The [`Snapshot`](/api/snapshot) interface represents a table state at a specific point in time. It enables:
+- Time travel queries
+- Snapshot metadata access
+- Manifest and data file tracking
+
+## Package Structure
+
+All core APIs are in the `org.apache.iceberg` package:
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.SortOrder;
+import org.apache.iceberg.Snapshot;
+```
+
+## Common Patterns
+
+### Loading a Table
+
+```java
+// Using a catalog
+Catalog catalog = ...
+Table table = catalog.loadTable(TableIdentifier.of("db", "table"));
+```
+
+### Reading Table Metadata
+
+```java
+Table table = ...
+
+// Get current schema
+Schema schema = table.schema();
+
+// Get partition spec
+PartitionSpec spec = table.spec();
+
+// Get sort order
+SortOrder sortOrder = table.sortOrder();
+
+// Get current snapshot
+Snapshot snapshot = table.currentSnapshot();
+```
+
+### Scanning Data
+
+```java
+Table table = ...
+
+// Create a table scan
+TableScan scan = table.newScan()
+    .filter(Expressions.equal("status", "active"))
+    .select("id", "name", "timestamp");
+
+// Execute the scan
+for (CombinedScanTask task : scan.planTasks()) {
+    // Process tasks
+}
+```
+
+### Updating Data
+
+```java
+Table table = ...
+
+// Append new data files
+table.newAppend()
+    .appendFile(dataFile)
+    .commit();
+
+// Update schema
+table.updateSchema()
+    .addColumn("new_field", Types.StringType.get())
+    .commit();
+```
+
+## Thread Safety
+
+All Iceberg table operations are designed to be thread-safe and support concurrent modifications through optimistic concurrency control.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Table API" icon="table" href="/api/table">
+    Explore the Table interface and its methods
+  </Card>
+  <Card title="Schema API" icon="sitemap" href="/api/schema">
+    Learn about schema management and evolution
+  </Card>
+  <Card title="PartitionSpec API" icon="layer-group" href="/api/partition-spec">
+    Understand partition specifications and transforms
+  </Card>
+  <Card title="SortOrder API" icon="sort" href="/api/sort-order">
+    Configure how data files are sorted
+  </Card>
+</CardGroup>

@@ -1,0 +1,468 @@
+---
+title: Transforms
+description: Partition transform functions in Apache Iceberg
+---
+
+The `Transforms` class provides factory methods for creating partition transform functions in Apache Iceberg.
+
+## Overview
+
+Transforms are used to:
+- Partition data efficiently
+- Create hidden partitions from column values
+- Enable partition pruning during queries
+
+Most users should create transforms using `PartitionSpec.builderFor(Schema)` rather than directly.
+
+## Identity Transform
+
+### identity()
+
+Returns an identity transform that passes values through unchanged.
+
+```java
+<T> Transform<T, T> identity()
+```
+
+**Example:**
+```java
+import org.apache.iceberg.transforms.Transforms;
+import org.apache.iceberg.transforms.Transform;
+
+Transform<String, String> idTransform = Transforms.identity();
+```
+
+**Usage in PartitionSpec:**
+```java
+import org.apache.iceberg.PartitionSpec;
+
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .identity("category")
+    .identity("region")
+    .build();
+```
+
+## Bucket Transform
+
+### bucket()
+
+Returns a bucket transform that hashes values into a fixed number of buckets.
+
+```java
+<T> Transform<T, Integer> bucket(int numBuckets)
+```
+
+**Parameters:**
+- `numBuckets` - The number of buckets to distribute values into
+
+**Example:**
+```java
+Transform<Long, Integer> bucketTransform = Transforms.bucket(16);
+```
+
+**Usage in PartitionSpec:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .bucket("user_id", 16)  // 16 buckets
+    .build();
+```
+
+**Common Bucket Sizes:**
+- 4, 8, 16 - For small to medium tables
+- 32, 64 - For larger tables
+- 128, 256 - For very large tables
+
+## Truncate Transform
+
+### truncate()
+
+Returns a truncate transform that truncates values to a specified width.
+
+```java
+<T> Transform<T, T> truncate(int width)
+```
+
+**Parameters:**
+- `width` - The width to truncate to
+  - For strings: truncates to width characters
+  - For integers/longs: truncates to width units
+  - For decimals: truncates to width units
+
+**Example:**
+```java
+Transform<String, String> truncTransform = Transforms.truncate(10);
+```
+
+**Usage in PartitionSpec:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .truncate("name", 10)      // First 10 chars
+    .truncate("value", 100)    // Truncate to 100s
+    .build();
+```
+
+## Temporal Transforms
+
+### year()
+
+Extracts the year from dates or timestamps.
+
+```java
+<T> Transform<T, Integer> year()
+```
+
+**Example:**
+```java
+Transform<Long, Integer> yearTransform = Transforms.year();
+```
+
+**Usage in PartitionSpec:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .year("event_time")
+    .build();
+```
+
+### month()
+
+Extracts the month from dates or timestamps (as months since epoch).
+
+```java
+<T> Transform<T, Integer> month()
+```
+
+**Example:**
+```java
+Transform<Long, Integer> monthTransform = Transforms.month();
+```
+
+**Usage in PartitionSpec:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .month("created_date")
+    .build();
+```
+
+### day()
+
+Extracts the day from dates or timestamps (as days since epoch).
+
+```java
+<T> Transform<T, Integer> day()
+```
+
+**Example:**
+```java
+Transform<Long, Integer> dayTransform = Transforms.day();
+```
+
+**Usage in PartitionSpec:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .day("event_date")
+    .build();
+```
+
+### hour()
+
+Extracts the hour from timestamps (as hours since epoch).
+
+```java
+<T> Transform<T, Integer> hour()
+```
+
+**Example:**
+```java
+Transform<Long, Integer> hourTransform = Transforms.hour();
+```
+
+**Usage in PartitionSpec:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .hour("event_timestamp")
+    .build();
+```
+
+## Void Transform
+
+### alwaysNull()
+
+Returns a transform that always produces null (void transform).
+
+```java
+<T> Transform<T, Void> alwaysNull()
+```
+
+**Example:**
+```java
+Transform<String, Void> voidTransform = Transforms.alwaysNull();
+```
+
+## Parsing Transforms
+
+### fromString()
+
+Parses a transform from a string representation.
+
+```java
+Transform<?, ?> fromString(String transform)
+```
+
+**Supported Formats:**
+- `"identity"`
+- `"year"`, `"month"`, `"day"`, `"hour"`
+- `"bucket[N]"` - e.g., `"bucket[16]"`
+- `"truncate[N]"` - e.g., `"truncate[10]"`
+- `"void"`
+
+**Example:**
+```java
+Transform<?, ?> transform1 = Transforms.fromString("bucket[16]");
+Transform<?, ?> transform2 = Transforms.fromString("year");
+Transform<?, ?> transform3 = Transforms.fromString("truncate[10]");
+```
+
+## Examples
+
+### Basic Partition Specs
+
+```java
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.types.Types;
+import static org.apache.iceberg.types.Types.NestedField.*;
+
+// Create schema
+Schema schema = new Schema(
+    required(1, "id", Types.LongType.get()),
+    required(2, "event_time", Types.TimestampType.withZone()),
+    required(3, "category", Types.StringType.get()),
+    required(4, "user_id", Types.LongType.get())
+);
+
+// Partition by date
+PartitionSpec dateSpec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .build();
+
+// Partition by category (identity)
+PartitionSpec categorySpec = PartitionSpec.builderFor(schema)
+    .identity("category")
+    .build();
+
+// Partition by user bucket
+PartitionSpec userSpec = PartitionSpec.builderFor(schema)
+    .bucket("user_id", 16)
+    .build();
+```
+
+### Time-Based Partitioning
+
+```java
+// Yearly partitions
+PartitionSpec yearlySpec = PartitionSpec.builderFor(schema)
+    .year("event_time")
+    .build();
+
+// Monthly partitions
+PartitionSpec monthlySpec = PartitionSpec.builderFor(schema)
+    .month("event_time")
+    .build();
+
+// Daily partitions
+PartitionSpec dailySpec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .build();
+
+// Hourly partitions
+PartitionSpec hourlySpec = PartitionSpec.builderFor(schema)
+    .hour("event_time")
+    .build();
+```
+
+### Multi-Level Partitioning
+
+```java
+// Partition by year and month
+PartitionSpec yearMonthSpec = PartitionSpec.builderFor(schema)
+    .year("event_time")
+    .month("event_time")
+    .build();
+
+// Partition by date and category
+PartitionSpec dateCategorySpec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .identity("category")
+    .build();
+
+// Partition by date and user bucket
+PartitionSpec dateUserSpec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .bucket("user_id", 16)
+    .build();
+```
+
+### String Truncation
+
+```java
+Schema schema = new Schema(
+    required(1, "id", Types.LongType.get()),
+    required(2, "email", Types.StringType.get()),
+    required(3, "name", Types.StringType.get())
+);
+
+// Partition by email prefix
+PartitionSpec emailSpec = PartitionSpec.builderFor(schema)
+    .truncate("email", 10)  // First 10 characters
+    .build();
+
+// Partition by name prefix
+PartitionSpec nameSpec = PartitionSpec.builderFor(schema)
+    .truncate("name", 5)    // First 5 characters
+    .build();
+```
+
+### Numeric Truncation
+
+```java
+Schema schema = new Schema(
+    required(1, "price", Types.DecimalType.of(10, 2)),
+    required(2, "quantity", Types.IntegerType.get())
+);
+
+// Partition by price in $100 increments
+PartitionSpec priceSpec = PartitionSpec.builderFor(schema)
+    .truncate("price", 100)
+    .build();
+
+// Partition by quantity in groups of 1000
+PartitionSpec quantitySpec = PartitionSpec.builderFor(schema)
+    .truncate("quantity", 1000)
+    .build();
+```
+
+### Hash-Based Distribution
+
+```java
+// Distribute users evenly
+PartitionSpec userDistribution = PartitionSpec.builderFor(schema)
+    .bucket("user_id", 32)  // 32 buckets
+    .build();
+
+// Combine with time partitioning
+PartitionSpec timeUserSpec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .bucket("user_id", 16)
+    .build();
+```
+
+### Evolving Partition Specs
+
+```java
+import org.apache.iceberg.Table;
+
+// Initial spec - daily partitions
+PartitionSpec initialSpec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .build();
+
+Table table = createTable(schema, initialSpec);
+
+// Later - add category partitioning
+table.updateSpec()
+    .addField("category")
+    .commit();
+
+// Later - change to monthly partitions
+table.updateSpec()
+    .removeField("event_time_day")
+    .addField(Transforms.month(), "event_time")
+    .commit();
+```
+
+### Custom Partition Values
+
+```java
+import org.apache.iceberg.transforms.Transform;
+import org.apache.iceberg.PartitionData;
+import org.apache.iceberg.StructLike;
+
+// Get transform
+Transform<Long, Integer> bucketTransform = Transforms.bucket(16);
+
+// Apply transform
+Long userId = 12345L;
+Integer bucket = bucketTransform.apply(userId);
+System.out.println("User " + userId + " -> bucket " + bucket);
+
+// Year transform
+Transform<Long, Integer> yearTransform = Transforms.year();
+Long timestamp = System.currentTimeMillis() * 1000; // microseconds
+Integer year = yearTransform.apply(timestamp);
+System.out.println("Timestamp " + timestamp + " -> year " + year);
+```
+
+### Transform String Representation
+
+```java
+import org.apache.iceberg.transforms.Transform;
+
+Transform<?, ?> bucket16 = Transforms.bucket(16);
+System.out.println(bucket16.toString()); // "bucket[16]"
+
+Transform<?, ?> year = Transforms.year();
+System.out.println(year.toString()); // "year"
+
+Transform<?, ?> trunc10 = Transforms.truncate(10);
+System.out.println(trunc10.toString()); // "truncate[10]"
+```
+
+## Best Practices
+
+### Choosing Partition Transforms
+
+1. **Time-based data**: Use `year()`, `month()`, `day()`, or `hour()` based on query patterns
+2. **High cardinality columns**: Use `bucket()` to limit number of partitions
+3. **String prefixes**: Use `truncate()` for prefix-based partitioning
+4. **Low cardinality**: Use `identity()` for direct partitioning
+
+### Partition Granularity
+
+```java
+// Too fine - creates too many small files
+PartitionSpec tooFine = PartitionSpec.builderFor(schema)
+    .hour("event_time")
+    .bucket("user_id", 1000)
+    .build();
+
+// Better - balanced partition size
+PartitionSpec balanced = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .bucket("user_id", 16)
+    .build();
+```
+
+### Bucket Count Selection
+
+```java
+// Small table (< 1M rows)
+PartitionSpec small = PartitionSpec.builderFor(schema)
+    .bucket("id", 4)
+    .build();
+
+// Medium table (1M - 100M rows)
+PartitionSpec medium = PartitionSpec.builderFor(schema)
+    .bucket("id", 16)
+    .build();
+
+// Large table (> 100M rows)
+PartitionSpec large = PartitionSpec.builderFor(schema)
+    .bucket("id", 64)
+    .build();
+```
+
+## See Also
+
+- [PartitionSpec](/api/partition-spec) - Partition specification
+- [Expressions](/api/expressions) - Expression API for filters
+- [Types](/api/types) - Type system

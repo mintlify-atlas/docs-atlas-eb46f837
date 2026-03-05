@@ -1,0 +1,429 @@
+---
+title: 'Writing Data with Spark'
+description: 'Insert, update, merge, and delete data in Iceberg tables using Apache Spark'
+---
+
+## Overview
+
+To write to Iceberg tables in Spark, first configure [Spark catalogs](/engines/spark/configuration). Some write operations require [Iceberg SQL extensions](/engines/spark/configuration#sql-extensions).
+
+## Feature Support
+
+| Feature | Spark Support | Notes |
+|---------|---------------|-------|
+| SQL INSERT INTO | ✔️ All versions | Requires `spark.sql.storeAssignmentPolicy=ANSI` |
+| SQL MERGE INTO | ✔️ All versions | Requires Iceberg Spark extensions |
+| SQL INSERT OVERWRITE | ✔️ All versions | Requires ANSI assignment policy |
+| SQL DELETE FROM | ✔️ All versions | Row-level deletes require extensions |
+| SQL UPDATE | ✔️ All versions | Requires Iceberg Spark extensions |
+| DataFrame writes | ✔️ All versions | DataFrameWriterV2 recommended |
+| DataFrame CTAS/RTAS | ✔️ All versions | Requires DSv2 API |
+| DataFrame MERGE | ✔️ Spark 4.0+ | Requires DSv2 API |
+
+## Writing with SQL
+
+### INSERT INTO
+
+Append new data to a table:
+
+<CodeGroup>
+```sql Insert Values
+INSERT INTO prod.db.table 
+VALUES (1, 'a'), (2, 'b');
+```
+
+```sql Insert from Query
+INSERT INTO prod.db.table 
+SELECT id, data FROM source_table;
+```
+</CodeGroup>
+
+### MERGE INTO
+
+Perform upserts and conditional updates:
+
+<CodeGroup>
+```sql Basic Merge
+MERGE INTO prod.db.target t
+USING (SELECT * FROM updates) s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET t.data = s.data
+WHEN NOT MATCHED THEN INSERT *;
+```
+
+```sql Conditional Merge
+MERGE INTO prod.db.target t
+USING (SELECT * FROM updates) s
+ON t.id = s.id
+WHEN MATCHED AND s.op = 'delete' THEN DELETE
+WHEN MATCHED AND s.op = 'increment' THEN 
+    UPDATE SET t.count = t.count + 1
+WHEN NOT MATCHED AND s.event_time > '2024-01-01' THEN 
+    INSERT (id, count) VALUES (s.id, 1);
+```
+
+```sql NOT MATCHED BY SOURCE
+-- Spark 3.5+ feature
+MERGE INTO prod.db.target t
+USING (SELECT * FROM updates) s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET t.data = s.data
+WHEN NOT MATCHED THEN INSERT *
+WHEN NOT MATCHED BY SOURCE THEN 
+    UPDATE SET status = 'invalid';
+```
+</CodeGroup>
+
+<Info>
+**MERGE INTO is recommended over INSERT OVERWRITE** because Iceberg only replaces affected data files, and dynamic overwrite behavior can change if partitioning changes.
+</Info>
+
+<Warning>
+Only one source record can update any target row. Multiple matches will cause an error.
+</Warning>
+
+#### Snapshot Summary (Spark 4.1+)
+
+MERGE INTO operations provide detailed metrics in snapshot summaries:
+
+| Metric | Description |
+|--------|-------------|
+| `spark.merge-into.num-target-rows-copied` | Rows copied without modification |
+| `spark.merge-into.num-target-rows-deleted` | Rows deleted |
+| `spark.merge-into.num-target-rows-updated` | Rows updated |
+| `spark.merge-into.num-target-rows-inserted` | Rows inserted |
+| `spark.merge-into.num-target-rows-matched-updated` | Rows updated by MATCHED clause |
+| `spark.merge-into.num-target-rows-not-matched-by-source-deleted` | Rows deleted by NOT MATCHED BY SOURCE |
+
+### INSERT OVERWRITE
+
+Replace table or partition data:
+
+<CodeGroup>
+```sql Dynamic Overwrite
+-- Set dynamic mode (recommended)
+SET spark.sql.sources.partitionOverwriteMode=dynamic;
+
+INSERT OVERWRITE prod.my_app.logs
+SELECT uuid, first(level), first(ts), first(message)
+FROM prod.my_app.logs
+WHERE cast(ts as date) = '2020-07-01'
+GROUP BY uuid;
+```
+
+```sql Static Overwrite
+INSERT OVERWRITE prod.my_app.logs
+PARTITION (level = 'INFO')
+SELECT uuid, first(level), first(ts), first(message)
+FROM prod.my_app.logs
+WHERE level = 'INFO'
+GROUP BY uuid;
+```
+</CodeGroup>
+
+<Warning>
+**Dynamic overwrite mode is recommended** for Iceberg tables. Static mode requires a `PARTITION` clause that can only reference table columns, not hidden partitions.
+</Warning>
+
+### DELETE FROM
+
+Remove rows matching a filter:
+
+<CodeGroup>
+```sql Simple Delete
+DELETE FROM prod.db.table
+WHERE ts >= '2020-05-01' AND ts < '2020-06-01';
+```
+
+```sql Subquery Delete
+DELETE FROM prod.db.all_events
+WHERE session_time < (
+    SELECT min(session_time) FROM prod.db.good_events
+);
+```
+
+```sql Correlated Delete
+DELETE FROM prod.db.orders AS t1
+WHERE EXISTS (
+    SELECT oid FROM prod.db.returned_orders 
+    WHERE t1.oid = oid
+);
+```
+</CodeGroup>
+
+<Info>
+If the filter matches entire partitions, Iceberg performs a metadata-only delete. Otherwise, only affected data files are rewritten.
+</Info>
+
+### UPDATE
+
+Update rows matching a filter:
+
+<CodeGroup>
+```sql Simple Update
+UPDATE prod.db.table
+SET c1 = 'update_c1', c2 = 'update_c2'
+WHERE ts >= '2020-05-01' AND ts < '2020-06-01';
+```
+
+```sql Subquery Update
+UPDATE prod.db.all_events
+SET session_time = 0, ignored = true
+WHERE session_time < (
+    SELECT min(session_time) FROM prod.db.good_events
+);
+```
+
+```sql Correlated Update
+UPDATE prod.db.orders AS t1
+SET order_status = 'returned'
+WHERE EXISTS (
+    SELECT oid FROM prod.db.returned_orders 
+    WHERE t1.oid = oid
+);
+```
+</CodeGroup>
+
+## Writing to Branches
+
+Write to specific branches for Write-Audit-Publish (WAP) workflows:
+
+<CodeGroup>
+```sql INSERT to Branch
+INSERT INTO prod.db.table.branch_audit 
+VALUES (1, 'a'), (2, 'b');
+```
+
+```sql MERGE to Branch
+MERGE INTO prod.db.table.branch_audit t
+USING (SELECT * FROM updates) s
+ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET t.data = s.data;
+```
+
+```sql WAP Branch Configuration
+SET spark.wap.branch = audit-branch;
+INSERT INTO prod.db.table VALUES (3, 'c');
+```
+</CodeGroup>
+
+<Note>
+The branch must exist before writing. Use [CREATE BRANCH](/engines/spark/ddl#branching-and-tagging) to create branches.
+</Note>
+
+## Writing with DataFrames
+
+The DataFrameWriterV2 API is recommended for DataFrame writes:
+
+### Appending Data
+
+```scala
+val data: DataFrame = ...
+data.writeTo("prod.db.table").append()
+```
+
+### Overwriting Data
+
+<CodeGroup>
+```scala Dynamic Overwrite
+val data: DataFrame = ...
+data.writeTo("prod.db.table").overwritePartitions()
+```
+
+```scala Filter Overwrite
+val data: DataFrame = ...
+data.writeTo("prod.db.table")
+    .overwrite($"level" === "INFO")
+```
+</CodeGroup>
+
+### Creating Tables
+
+<CodeGroup>
+```scala Create Table
+val data: DataFrame = ...
+data.writeTo("prod.db.table").create()
+```
+
+```scala With Partitioning
+val data: DataFrame = ...
+data.writeTo("prod.db.table")
+    .tableProperty("write.format.default", "orc")
+    .partitionedBy($"level", days($"ts"))
+    .createOrReplace()
+```
+
+```scala With Location
+val data: DataFrame = ...
+data.writeTo("prod.db.table")
+    .tableProperty("location", "/path/to/location")
+    .createOrReplace()
+```
+</CodeGroup>
+
+### Merging Data (Spark 4.0+)
+
+```scala
+val source: DataFrame = ...
+source.mergeInto("target", $"source.id" === $"target.id")
+    .whenMatched($"target.id" === 1)
+    .updateAll()
+    .whenMatched($"target.id" === 2)
+    .delete()
+    .whenNotMatched()
+    .insertAll()
+    .whenNotMatchedBySource($"target.id" === 3)
+    .update(Map("status" -> lit("invalid")))
+    .merge()
+```
+
+### Writing to Branches
+
+```scala
+val data: DataFrame = ...
+data.writeTo("prod.db.table.branch_audit").append()
+
+data.writeTo("prod.db.table.branch_audit").overwritePartitions()
+```
+
+<Warning>
+When using the v1 DataFrame API, use `saveAsTable` or `insertInto` instead of `format("iceberg")` to ensure proper catalog integration.
+</Warning>
+
+## Schema Merge
+
+Enable automatic schema evolution during writes:
+
+<Steps>
+  <Step title="Enable Schema Evolution">
+    Configure the table to accept schema changes:
+    
+    ```sql
+    ALTER TABLE prod.db.sample SET TBLPROPERTIES (
+      'write.spark.accept-any-schema'='true'
+    );
+    ```
+  </Step>
+  
+  <Step title="Enable mergeSchema Option">
+    Enable the merge option in your write:
+    
+    ```scala
+    data.writeTo("prod.db.sample")
+        .option("mergeSchema", "true")
+        .append()
+    ```
+  </Step>
+</Steps>
+
+**Schema merge behavior:**
+- New columns in source are added to target (set to NULL for existing rows)
+- Missing columns in source are set to NULL (insert) or unchanged (update)
+
+## Distribution Modes
+
+Control how Spark distributes data before writing:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `hash` (default) | Hash-based shuffle by partition values | General purpose, balanced performance |
+| `range` | Range-based shuffle with global sorting | Better read performance, higher write cost |
+| `none` | No automatic distribution | Manual control, requires sorting |
+
+<CodeGroup>
+```sql Set Distribution Mode
+ALTER TABLE prod.db.sample SET TBLPROPERTIES (
+    'write.distribution-mode'='hash'
+);
+```
+
+```scala Override Per Write
+data.writeTo("prod.db.sample")
+    .option("distribution-mode", "range")
+    .append()
+```
+</CodeGroup>
+
+<Info>
+The `hash` distribution mode (new default in Iceberg 1.2.0) automatically sorts data by partition value, eliminating the need for manual sorting in most cases.
+</Info>
+
+## Controlling File Sizes
+
+### Target File Size
+
+Control output file sizes with table properties:
+
+```sql
+ALTER TABLE prod.db.sample SET TBLPROPERTIES (
+    'write.target-file-size-bytes'='536870912'  -- 512 MB
+);
+```
+
+### Spark Task Size
+
+Adjust Spark's Adaptive Query Execution (AQE) to control task sizes:
+
+```properties
+spark.sql.adaptive.advisoryPartitionSizeInBytes=134217728  -- 128 MB
+```
+
+<Note>
+The in-memory Spark row size is larger than on-disk columnar-compressed size. A larger AQE partition size than the target file size is typically needed.
+</Note>
+
+### Fanout Writers
+
+For streaming workloads on partitioned tables:
+
+```scala
+data.writeTo("prod.db.sample")
+    .option("fanout-enabled", "true")
+    .append()
+```
+
+<Warning>
+Fanout writers keep files open per partition value until the write task finishes. Use only for streaming; not recommended for batch writes.
+</Warning>
+
+## Write Options
+
+Common write options for DataFrameWriterV2:
+
+| Option | Description | Default |
+|--------|-------------|----------|
+| `write-format` | File format (parquet, avro, orc) | Table default |
+| `target-file-size-bytes` | Target output file size | Table property |
+| `compression-codec` | Compression codec | Table default |
+| `distribution-mode` | Distribution strategy | `hash` |
+| `fanout-enabled` | Enable fanout writer | `false` |
+| `isolation-level` | Isolation level for overwrites | `null` |
+| `snapshot-property.<key>` | Custom snapshot metadata | - |
+
+### Example with Options
+
+```scala
+df.writeTo("catalog.db.table")
+    .option("write-format", "avro")
+    .option("target-file-size-bytes", "268435456")  // 256 MB
+    .option("compression-codec", "zstd")
+    .option("snapshot-property.key", "value")
+    .append()
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Procedures" icon="gears" href="/engines/spark/procedures">
+    Maintain tables with compaction and cleanup
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/engines/spark/configuration">
+    Configure write performance and behavior
+  </Card>
+  <Card title="Structured Streaming" icon="water" href="/engines/spark/structured-streaming">
+    Stream data with continuous writes
+  </Card>
+  <Card title="DDL Operations" icon="database" href="/engines/spark/ddl">
+    Create and alter table schemas
+  </Card>
+</CardGroup>

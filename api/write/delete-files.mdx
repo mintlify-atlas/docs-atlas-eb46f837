@@ -1,0 +1,456 @@
+---
+title: DeleteFiles
+description: API for deleting files from Apache Iceberg tables
+---
+
+The `DeleteFiles` interface provides an API for removing data files from an Iceberg table.
+
+## Overview
+
+DeleteFiles accumulates file deletions, produces a new snapshot of the table, and commits that snapshot as the current. This is used to remove files that are no longer needed or to delete data matching specific criteria.
+
+## Interface
+
+```java
+public interface DeleteFiles extends SnapshotUpdate<DeleteFiles>
+```
+
+## Core Methods
+
+### deleteFile() with Path
+
+Deletes a file by its path.
+
+```java
+DeleteFiles deleteFile(CharSequence path)
+```
+
+**Parameters:**
+- `path` - A fully-qualified file path to remove from the table
+
+**Returns:** This for method chaining
+
+**Description:**
+To remove a file from the table, this path must exactly match a path in the table's metadata. Paths that are different but equivalent will not be removed. For example, `file:/path/file.avro` is equivalent to `file:///path/file.avro`, but would not remove the latter.
+
+**Example:**
+```java
+table.newDelete()
+    .deleteFile("/data/date=2024-01-15/data-001.parquet")
+    .commit();
+```
+
+### deleteFile() with DataFile
+
+Deletes a file tracked by a DataFile.
+
+```java
+default DeleteFiles deleteFile(DataFile file)
+```
+
+**Parameters:**
+- `file` - A DataFile to remove from the table
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DataFile fileToDelete = ...; // From scan or manifest
+
+table.newDelete()
+    .deleteFile(fileToDelete)
+    .commit();
+```
+
+### deleteFromRowFilter()
+
+Deletes files that match an expression on data rows.
+
+```java
+DeleteFiles deleteFromRowFilter(Expression expr)
+```
+
+**Parameters:**
+- `expr` - An expression on rows in the table
+
+**Returns:** This for method chaining
+
+**Throws:** `ValidationException` if a file can contain both rows that match and rows that do not
+
+**Description:**
+A file is selected to be deleted if it could contain any rows that match the expression (using an inclusive projection). Files are deleted if all rows in the file must match the expression (using a strict projection).
+
+**Example:**
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+// Delete all files for a specific partition
+table.newDelete()
+    .deleteFromRowFilter(Expressions.equal("date", "2024-01-15"))
+    .commit();
+```
+
+### caseSensitive()
+
+Enables or disables case sensitive expression binding.
+
+```java
+DeleteFiles caseSensitive(boolean caseSensitive)
+```
+
+**Parameters:**
+- `caseSensitive` - Whether expression binding should be case sensitive
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+table.newDelete()
+    .caseSensitive(false)
+    .deleteFromRowFilter(Expressions.equal("DATE", "2024-01-15"))
+    .commit();
+```
+
+### validateFilesExist()
+
+Enables validation that deleted files still exist when committing.
+
+```java
+default DeleteFiles validateFilesExist()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+Validates that any files being deleted are still part of the table when the operation commits. This prevents issues from concurrent modifications.
+
+**Example:**
+```java
+table.newDelete()
+    .deleteFile(fileToDelete)
+    .validateFilesExist()
+    .commit();
+```
+
+## Examples
+
+### Delete Single File
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.DeleteFiles;
+
+// Delete by path
+String filePath = "/data/date=2024-01-15/old-file.parquet";
+
+table.newDelete()
+    .deleteFile(filePath)
+    .commit();
+
+System.out.println("Deleted file: " + filePath);
+```
+
+### Delete Multiple Files
+
+```java
+import java.util.List;
+
+// Delete multiple files
+List<String> filesToDelete = Arrays.asList(
+    "/data/file-001.parquet",
+    "/data/file-002.parquet",
+    "/data/file-003.parquet"
+);
+
+DeleteFiles delete = table.newDelete();
+for (String path : filesToDelete) {
+    delete.deleteFile(path);
+}
+delete.commit();
+
+System.out.println("Deleted " + filesToDelete.size() + " files");
+```
+
+### Delete Files from Scan
+
+```java
+import org.apache.iceberg.TableScan;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.expressions.Expressions;
+
+// Find and delete old files
+TableScan scan = table.newScan()
+    .filter(Expressions.lessThan("timestamp", oldTimestamp));
+
+DeleteFiles delete = table.newDelete();
+
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+    for (FileScanTask task : tasks) {
+        delete.deleteFile(task.file());
+    }
+}
+
+delete.commit();
+```
+
+### Delete Partition
+
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+// Delete entire partition
+String targetDate = "2024-01-15";
+
+table.newDelete()
+    .deleteFromRowFilter(Expressions.equal("date", targetDate))
+    .commit();
+
+System.out.println("Deleted partition: date=" + targetDate);
+```
+
+### Delete Multiple Partitions
+
+```java
+import org.apache.iceberg.expressions.Expression;
+
+// Delete multiple partitions
+List<String> datesToDelete = Arrays.asList(
+    "2024-01-01",
+    "2024-01-02",
+    "2024-01-03"
+);
+
+// Build OR expression
+Expression filter = null;
+for (String date : datesToDelete) {
+    Expression dateExpr = Expressions.equal("date", date);
+    filter = (filter == null) ? dateExpr : Expressions.or(filter, dateExpr);
+}
+
+table.newDelete()
+    .deleteFromRowFilter(filter)
+    .commit();
+
+System.out.println("Deleted " + datesToDelete.size() + " partitions");
+```
+
+### Delete with Validation
+
+```java
+import org.apache.iceberg.exceptions.ValidationException;
+
+// Delete with validation that files exist
+DataFile fileToDelete = findFileToDelete();
+
+try {
+    table.newDelete()
+        .deleteFile(fileToDelete)
+        .validateFilesExist()
+        .commit();
+    
+    System.out.println("Successfully deleted file");
+    
+} catch (ValidationException e) {
+    System.err.println("File no longer exists: " + e.getMessage());
+    // File was already deleted by another process
+}
+```
+
+### Conditional Delete
+
+```java
+// Delete files matching complex criteria
+Expression filter = Expressions.and(
+    Expressions.equal("category", "archived"),
+    Expressions.lessThan("modified_time", cutoffTime)
+);
+
+table.newDelete()
+    .deleteFromRowFilter(filter)
+    .commit();
+```
+
+### Delete Small Files
+
+```java
+import org.apache.iceberg.DataFile;
+
+// Delete files smaller than threshold
+long minFileSize = 10 * 1024 * 1024; // 10 MB
+
+TableScan scan = table.newScan();
+DeleteFiles delete = table.newDelete();
+int deleteCount = 0;
+
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+    for (FileScanTask task : tasks) {
+        DataFile file = task.file();
+        if (file.fileSizeInBytes() < minFileSize) {
+            delete.deleteFile(file);
+            deleteCount++;
+        }
+    }
+}
+
+if (deleteCount > 0) {
+    delete.commit();
+    System.out.println("Deleted " + deleteCount + " small files");
+}
+```
+
+### Delete with Time-Based Filter
+
+```java
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+
+// Delete data older than 90 days
+Instant cutoff = Instant.now().minus(90, ChronoUnit.DAYS);
+long cutoffMillis = cutoff.toEpochMilli();
+
+table.newDelete()
+    .deleteFromRowFilter(
+        Expressions.lessThan("timestamp", cutoffMillis)
+    )
+    .commit();
+
+System.out.println("Deleted data older than 90 days");
+```
+
+### Incremental Delete Pattern
+
+```java
+class IncrementalDeleter {
+    private final Table table;
+    private final DeleteFiles delete;
+    private int deleteCount = 0;
+    
+    public IncrementalDeleter(Table table) {
+        this.table = table;
+        this.delete = table.newDelete();
+    }
+    
+    public void deleteFile(DataFile file) {
+        delete.deleteFile(file);
+        deleteCount++;
+    }
+    
+    public void deleteFile(String path) {
+        delete.deleteFile(path);
+        deleteCount++;
+    }
+    
+    public void commit() {
+        if (deleteCount > 0) {
+            delete.commit();
+            System.out.println("Deleted " + deleteCount + " files");
+        }
+    }
+}
+
+// Usage
+IncrementalDeleter deleter = new IncrementalDeleter(table);
+try {
+    for (DataFile file : filesToDelete) {
+        if (shouldDelete(file)) {
+            deleter.deleteFile(file);
+        }
+    }
+} finally {
+    deleter.commit();
+}
+```
+
+### Case-Insensitive Delete
+
+```java
+// Delete using case-insensitive column names
+table.newDelete()
+    .caseSensitive(false)
+    .deleteFromRowFilter(
+        Expressions.equal("STATUS", "deleted")
+    )
+    .commit();
+```
+
+### Safe Delete with Error Handling
+
+```java
+import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.ValidationException;
+
+public void safeDelete(Table table, List<DataFile> files) {
+    try {
+        DeleteFiles delete = table.newDelete()
+            .validateFilesExist();
+        
+        for (DataFile file : files) {
+            delete.deleteFile(file);
+        }
+        
+        delete.commit();
+        
+        System.out.println("Successfully deleted " + files.size() + " files");
+        
+    } catch (ValidationException e) {
+        System.err.println("Validation failed: " + e.getMessage());
+        // Some files don't exist
+        
+    } catch (CommitFailedException e) {
+        System.err.println("Commit failed: " + e.getMessage());
+        // Retry or handle error
+    }
+}
+```
+
+## Important Notes
+
+### Path Matching
+
+Paths must match exactly:
+
+```java
+// These are equivalent but won't match each other:
+// - "file:/path/file.avro"
+// - "file:///path/file.avro"
+
+// Always use the exact path from table metadata
+DataFile file = ...;
+table.newDelete()
+    .deleteFile(file.path()) // Use exact path
+    .commit();
+```
+
+### Atomic Operations
+
+All deletions are atomic:
+
+```java
+// Either all files are deleted or none are
+DeleteFiles delete = table.newDelete();
+for (DataFile file : files) {
+    delete.deleteFile(file);
+}
+delete.commit(); // Atomic
+```
+
+### Expression-Based Deletion
+
+Files are only deleted if all rows match:
+
+```java
+// Only deletes files where ALL rows match the expression
+table.newDelete()
+    .deleteFromRowFilter(Expressions.equal("status", "archived"))
+    .commit();
+
+// Files with mixed status values will cause ValidationException
+```
+
+## See Also
+
+- [AppendFiles](/api/write/append-files) - Append files to a table
+- [OverwriteFiles](/api/write/overwrite-files) - Overwrite files in a table
+- [RowDelta](/api/write/row-delta) - Row-level changes
+- [Expressions](/api/expressions) - Filter expressions

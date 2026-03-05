@@ -1,0 +1,441 @@
+---
+title: Hive Integration Overview
+description: Read and write Iceberg tables with Apache Hive using StorageHandler
+---
+
+Iceberg supports reading and writing Iceberg tables through [Apache Hive](https://hive.apache.org) by using a [StorageHandler](https://cwiki.apache.org/confluence/display/Hive/StorageHandlers).
+
+## Feature Support
+
+Hive supports the following features with Hive version 4.0.0 and above:
+
+### Table Operations
+- Creating an Iceberg table
+- Creating an Iceberg identity-partitioned table
+- Creating an Iceberg table with any partition spec, including various transforms
+- Creating a table from an existing table (CTAS)
+- Dropping a table
+- Altering a table while keeping Iceberg and Hive schemas in sync
+- Altering the partition schema (updating columns)
+- Altering the partition schema by specifying partition transforms
+- Truncating a table/partition, dropping a partition
+- Migrating tables in Avro, Parquet, or ORC (Non-ACID) format to Iceberg
+
+### Query Operations
+- Reading an Iceberg table
+- Reading the schema of a table
+- Querying Iceberg metadata tables
+- Time travel applications
+
+### Write Operations
+- Inserting into a table/partition (INSERT INTO)
+- Inserting data overwriting existing data (INSERT OVERWRITE)
+- Copy-on-write support for DELETE, UPDATE and MERGE queries
+- CRUD support for Iceberg V1 tables
+
+### Advanced Features
+- Expiring snapshots
+- Creating tables like existing tables (CTLT)
+- Supporting Parquet compression types
+- Altering table metadata location
+- Supporting table rollback
+- Honoring sort orders on existing tables when writing
+- Creating, writing to and dropping Iceberg branches/tags
+- Setting current snapshot using snapshot ID
+- Table renaming
+- Converting tables to Iceberg format
+- Fast forwarding and cherry-picking commits to branches
+- Creating a branch from a tag
+- Deleting orphan files
+- Full table compaction
+- Showing partition information (SHOW PARTITIONS)
+
+<Warning>
+DML operations work only with Tez execution engine.
+</Warning>
+
+## Version Support
+
+### Hive 4.1.x
+
+Hive 4.1.x comes with Iceberg 1.9.1 included.
+
+### Hive 4.0.x
+
+Hive 4.0.x comes with Iceberg 1.4.3 included.
+
+<Note>
+Starting from Iceberg 1.8.0, Iceberg doesn't release a Hive runtime connector. For Hive 2.x and 3.x integration, use the Hive runtime connector from Iceberg 1.6.1, or use Hive 4.0.0 or later.
+</Note>
+
+## Enabling Iceberg Support
+
+If the Iceberg storage handler is not in Hive's classpath, Hive cannot load or update the metadata for an Iceberg table. To avoid broken tables in Hive, Iceberg will not add the storage handler unless Hive support is enabled.
+
+### Hadoop Configuration
+
+To enable Hive support globally for an application, set `iceberg.engine.hive.enabled=true` in its Hadoop configuration:
+
+```xml
+<property>
+  <name>iceberg.engine.hive.enabled</name>
+  <value>true</value>
+</property>
+```
+
+For example, setting this in the `hive-site.xml` loaded by Spark will enable the storage handler for all tables created by Spark.
+
+### Table Property Configuration
+
+Alternatively, set the property `engine.hive.enabled=true` when creating the Iceberg table:
+
+```java
+Catalog catalog = ...;
+Map<String, String> tableProperties = Maps.newHashMap();
+tableProperties.put(TableProperties.ENGINE_HIVE_ENABLED, "true");
+catalog.createTable(tableId, schema, spec, tableProperties);
+```
+
+<Note>
+The table level configuration overrides the global Hadoop configuration.
+</Note>
+
+## Catalog Management
+
+### Global Hive Catalog
+
+From the Hive engine's perspective, there is only one global data catalog defined in the Hadoop configuration. In contrast, Iceberg supports multiple catalog types such as Hive, Hadoop, AWS Glue, or custom implementations.
+
+A table in the Hive metastore can represent three different ways of loading an Iceberg table, depending on the table's `iceberg.catalog` property:
+
+1. **HiveCatalog** - No `iceberg.catalog` is set
+2. **Custom catalog** - `iceberg.catalog` is set to a catalog name
+3. **Location-based table** - `iceberg.catalog` is set to `location_based_table`
+
+### Custom Iceberg Catalogs
+
+To globally register different catalogs, set the following Hadoop configurations:
+
+| Config Key | Description |
+| --- | --- |
+| `iceberg.catalog.<catalog_name>.type` | Type of catalog: `hive`, `hadoop`, or left unset if using a custom catalog |
+| `iceberg.catalog.<catalog_name>.catalog-impl` | Catalog implementation, must not be null if type is empty |
+| `iceberg.catalog.<catalog_name>.<key>` | Any config key and value pairs for the catalog |
+
+#### Examples
+
+Register a HiveCatalog called `another_hive`:
+
+```sql
+SET iceberg.catalog.another_hive.type=hive;
+SET iceberg.catalog.another_hive.uri=thrift://example.com:9083;
+SET iceberg.catalog.another_hive.clients=10;
+SET iceberg.catalog.another_hive.warehouse=hdfs://example.com:8020/warehouse;
+```
+
+Register a HadoopCatalog called `hadoop`:
+
+```sql
+SET iceberg.catalog.hadoop.type=hadoop;
+SET iceberg.catalog.hadoop.warehouse=hdfs://example.com:8020/warehouse;
+```
+
+Register an AWS GlueCatalog called `glue`:
+
+```sql
+SET iceberg.catalog.glue.type=glue;
+SET iceberg.catalog.glue.warehouse=s3://my-bucket/my/key/prefix;
+SET iceberg.catalog.glue.lock.table=myGlueLockTable;
+```
+
+## Type Compatibility
+
+Hive and Iceberg support different sets of types. Iceberg can perform type conversion automatically for some combinations.
+
+Enable auto-conversion through Hadoop configuration:
+
+```sql
+SET iceberg.mr.schema.auto.conversion=true;
+```
+
+### Hive to Iceberg Type Mapping
+
+| Hive | Iceberg | Notes |
+| --- | --- | --- |
+| boolean | boolean | |
+| short | integer | auto-conversion |
+| byte | integer | auto-conversion |
+| integer | integer | |
+| long | long | |
+| float | float | |
+| double | double | |
+| date | date | |
+| timestamp | timestamp without timezone | |
+| timestamplocaltz | timestamp with timezone | Hive 3 only |
+| char | string | auto-conversion |
+| varchar | string | auto-conversion |
+| string | string | |
+| binary | binary | |
+| decimal | decimal | |
+| struct | struct | |
+| list | list | |
+| map | map | |
+| interval_year_month | | not supported |
+| interval_day_time | | not supported |
+| union | | not supported |
+
+## DDL Commands
+
+### CREATE TABLE
+
+#### Non-partitioned Tables
+
+```sql
+CREATE EXTERNAL TABLE x (i int) STORED BY ICEBERG;
+```
+
+You can specify the default file format (Avro, Parquet, ORC) at table creation:
+
+```sql
+CREATE TABLE x (i int) STORED BY ICEBERG STORED AS ORC;
+```
+
+#### Partitioned Tables
+
+Create Iceberg partitioned tables using familiar syntax:
+
+```sql
+CREATE TABLE x (i int) PARTITIONED BY (j int) STORED BY ICEBERG;
+```
+
+<Info>
+The resulting table does not create partitions in HMS, but instead converts partition data into Iceberg identity partitions.
+</Info>
+
+Create Iceberg partitions using partition specification syntax (Hive 4.0.0+):
+
+```sql
+CREATE TABLE x (i int, ts timestamp) 
+PARTITIONED BY SPEC (month(ts), bucket(2, i)) 
+STORED BY ICEBERG;
+```
+
+**Supported transformations:**
+- `years(ts)`: partition by year
+- `months(ts)`: partition by month
+- `days(ts)` or `date(ts)`: equivalent to dateint partitioning
+- `hours(ts)` or `date_hour(ts)`: equivalent to dateint and hour partitioning
+- `bucket(N, col)`: partition by hashed value mod N buckets
+- `truncate(L, col)`: partition by value truncated to L
+
+### CREATE TABLE AS SELECT
+
+```sql
+CREATE TABLE target PARTITIONED BY SPEC (year(year_field), identity_field) 
+STORED BY ICEBERG AS
+SELECT * FROM source;
+```
+
+<Note>
+The Iceberg table and corresponding Hive table are created at the beginning of query execution. Data is inserted when the query finishes.
+</Note>
+
+### CREATE TABLE LIKE TABLE
+
+```sql
+CREATE TABLE target LIKE source STORED BY ICEBERG;
+```
+
+### CREATE EXTERNAL TABLE
+
+Overlay a Hive table on top of an existing Iceberg table:
+
+```sql
+CREATE EXTERNAL TABLE database_a.table_a
+STORED BY 'org.apache.iceberg.mr.hive.HiveIcebergStorageHandler'
+TBLPROPERTIES ('iceberg.catalog'='hadoop_cat');
+```
+
+For path-based Hadoop tables:
+
+```sql
+CREATE EXTERNAL TABLE table_a 
+STORED BY 'org.apache.iceberg.mr.hive.HiveIcebergStorageHandler' 
+LOCATION 'hdfs://some_bucket/some_path/table_a'
+TBLPROPERTIES ('iceberg.catalog'='location_based_table');
+```
+
+## DML Commands
+
+### SELECT
+
+Select statements work the same on Iceberg tables with Iceberg benefits:
+
+- **No file system listings** - especially important on blob stores like S3
+- **No partition listing** from the Metastore
+- **Advanced partition filtering** - partition keys can be calculated
+- Handle **higher number of partitions** than normal Hive tables
+
+**Features:**
+1. Predicate pushdown to Iceberg TableScan and readers
+2. Column projection to reduce columns read
+3. Tez query execution engine support (Hive 4.x)
+
+Read from branches:
+
+```sql
+-- Branches should be specified as <database>.<table>.branch_<branch_name>
+SELECT * FROM default.test.branch_branch1;
+```
+
+### INSERT INTO
+
+```sql
+INSERT INTO table_a VALUES ('a', 1);
+
+INSERT INTO table_a SELECT ...;
+```
+
+Insert into branches:
+
+```sql
+INSERT INTO default.test.branch_branch1 VALUES ('a', 1);
+```
+
+Partition-level insert (Hive 4):
+
+```sql
+INSERT INTO table_a PARTITION (customer_id = 1, first_name = 'John')
+VALUES (1, 2);
+```
+
+### INSERT OVERWRITE
+
+```sql
+INSERT OVERWRITE TABLE target SELECT * FROM source;
+```
+
+Partition-level overwrite:
+
+```sql
+INSERT OVERWRITE TABLE target PARTITION (customer_id = 1) 
+SELECT * FROM source;
+```
+
+### DELETE FROM
+
+```sql
+DELETE FROM target WHERE id > 1 AND id < 10;
+
+DELETE FROM target WHERE id IN (SELECT id FROM source);
+```
+
+### UPDATE
+
+```sql
+UPDATE target SET first_name = 'Raj' WHERE id > 1 AND id < 10;
+
+UPDATE target SET first_name = 'Raj' WHERE id IN (SELECT id FROM source);
+```
+
+### MERGE INTO
+
+```sql
+MERGE INTO target AS t
+USING source s
+ON t.id = s.id
+WHEN MATCHED AND s.op = 'delete' THEN DELETE
+WHEN MATCHED AND s.op = 'update' THEN UPDATE SET t.count = s.count
+WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.count);
+```
+
+## Metadata Tables
+
+Query Iceberg metadata tables using the full table name:
+
+```sql
+SELECT * FROM default.table_a.files;
+SELECT * FROM default.table_a.snapshots;
+SELECT * FROM default.table_a.history;
+SELECT * FROM default.table_a.manifests;
+SELECT * FROM default.table_a.partitions;
+```
+
+**Available metadata tables:**
+- all_data_files
+- all_delete_files
+- all_entries
+- all_files
+- all_manifests
+- data_files
+- delete_files
+- entries
+- files
+- history
+- manifests
+- metadata_log_entries
+- partitions
+- refs
+- snapshots
+
+## Time Travel
+
+Query historical table snapshots:
+
+```sql
+SELECT * FROM table_a FOR SYSTEM_TIME AS OF '2021-08-09 10:35:57';
+
+SELECT * FROM table_a FOR SYSTEM_VERSION AS OF 1234567;
+```
+
+## Maintenance Operations
+
+### Expire Snapshots
+
+```sql
+ALTER TABLE test_table EXECUTE expire_snapshots('2021-12-09 05:39:18.689000000');
+```
+
+### Delete Orphan Files
+
+```sql
+ALTER TABLE table_a EXECUTE DELETE ORPHAN-FILES;
+
+ALTER TABLE table_a EXECUTE DELETE ORPHAN-FILES 
+OLDER THAN ('2021-12-09 05:39:18.689000000');
+```
+
+### Table Rollback
+
+Rollback to the last snapshot before a specific timestamp:
+
+```sql
+ALTER TABLE ice_t EXECUTE ROLLBACK('2022-05-12 00:00:00');
+```
+
+Rollback to a specific snapshot ID:
+
+```sql
+ALTER TABLE ice_t EXECUTE ROLLBACK(1111);
+```
+
+### Compaction
+
+```sql
+-- Using ALTER TABLE COMPACT syntax
+ALTER TABLE t COMPACT 'major';
+
+-- Using OPTIMIZE TABLE syntax
+OPTIMIZE TABLE t REWRITE DATA;
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure Iceberg table properties
+  </Card>
+  <Card title="Maintenance" icon="wrench" href="/maintenance">
+    Maintain Iceberg tables
+  </Card>
+</CardGroup>

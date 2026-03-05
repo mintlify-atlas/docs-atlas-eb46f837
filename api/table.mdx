@@ -1,0 +1,732 @@
+---
+title: 'Table'
+description: 'Apache Iceberg Table API reference'
+---
+
+# Table Interface
+
+The `Table` interface is the primary entry point for interacting with Apache Iceberg tables. It provides access to table metadata, scan operations, and write APIs.
+
+**Package:** `org.apache.iceberg`
+
+## Overview
+
+The `Table` interface represents an Iceberg table and provides methods for:
+- Accessing table metadata (schema, partition spec, sort order)
+- Creating scans to read data
+- Performing write operations (append, rewrite, overwrite, delete)
+- Managing snapshots and history
+- Evolving table structure
+
+## Metadata Access
+
+### name()
+
+```java
+default String name()
+```
+
+Returns the full name for this table.
+
+**Returns:** The table's name
+
+---
+
+### schema()
+
+```java
+Schema schema()
+```
+
+Returns the current [`Schema`](/api/schema) for this table.
+
+**Returns:** This table's schema
+
+**See also:** [Schema API](/api/schema)
+
+---
+
+### schemas()
+
+```java
+Map<Integer, Schema> schemas()
+```
+
+Returns a map of all schemas for this table, keyed by schema ID.
+
+**Returns:** Map of schema ID to Schema
+
+---
+
+### spec()
+
+```java
+PartitionSpec spec()
+```
+
+Returns the current [`PartitionSpec`](/api/partition-spec) for this table.
+
+**Returns:** This table's partition spec
+
+**See also:** [PartitionSpec API](/api/partition-spec)
+
+---
+
+### specs()
+
+```java
+Map<Integer, PartitionSpec> specs()
+```
+
+Returns a map of all partition specs for this table, keyed by spec ID.
+
+**Returns:** Map of spec ID to PartitionSpec
+
+---
+
+### sortOrder()
+
+```java
+SortOrder sortOrder()
+```
+
+Returns the current [`SortOrder`](/api/sort-order) for this table.
+
+**Returns:** This table's sort order
+
+**See also:** [SortOrder API](/api/sort-order)
+
+---
+
+### sortOrders()
+
+```java
+Map<Integer, SortOrder> sortOrders()
+```
+
+Returns a map of all sort orders for this table, keyed by order ID.
+
+**Returns:** Map of order ID to SortOrder
+
+---
+
+### properties()
+
+```java
+Map<String, String> properties()
+```
+
+Returns table properties as a string map.
+
+**Returns:** This table's properties map
+
+---
+
+### location()
+
+```java
+String location()
+```
+
+Returns the table's base location.
+
+**Returns:** This table's location (e.g., `s3://bucket/warehouse/db/table`)
+
+---
+
+### uuid()
+
+```java
+default UUID uuid()
+```
+
+Returns the UUID of the table.
+
+**Returns:** The table's UUID
+
+---
+
+### refresh()
+
+```java
+void refresh()
+```
+
+Refreshes the current table metadata from storage.
+
+This method should be called to pick up changes made by other writers.
+
+## Snapshot Access
+
+### currentSnapshot()
+
+```java
+Snapshot currentSnapshot()
+```
+
+Returns the current [`Snapshot`](/api/snapshot) for this table, or null if there are no snapshots.
+
+**Returns:** The current table snapshot, or null
+
+**See also:** [Snapshot API](/api/snapshot)
+
+---
+
+### snapshot(long snapshotId)
+
+```java
+Snapshot snapshot(long snapshotId)
+```
+
+Returns the snapshot with the given ID, or null if not found.
+
+<ParamField path="snapshotId" type="long" required>
+  The snapshot ID to retrieve
+</ParamField>
+
+**Returns:** The snapshot with the given ID, or null
+
+---
+
+### snapshot(String name)
+
+```java
+default Snapshot snapshot(String name)
+```
+
+Returns the snapshot referenced by the given name or null if no such reference exists.
+
+<ParamField path="name" type="String" required>
+  The snapshot reference name (e.g., "main", "audit")
+</ParamField>
+
+**Returns:** The referenced snapshot, or null
+
+---
+
+### snapshots()
+
+```java
+Iterable<Snapshot> snapshots()
+```
+
+Returns all snapshots for this table.
+
+**Returns:** An iterable of snapshots
+
+---
+
+### refs()
+
+```java
+Map<String, SnapshotRef> refs()
+```
+
+Returns the current snapshot references for the table.
+
+**Returns:** Map of reference name to SnapshotRef
+
+---
+
+### history()
+
+```java
+List<HistoryEntry> history()
+```
+
+Returns the snapshot history of this table.
+
+**Returns:** A list of history entries
+
+## Scan Operations
+
+### newScan()
+
+```java
+TableScan newScan()
+```
+
+Creates a new `TableScan` for this table.
+
+Once created, the scan can be refined to project columns and filter data.
+
+**Returns:** A new table scan
+
+**Example:**
+```java
+TableScan scan = table.newScan()
+    .filter(Expressions.equal("status", "active"))
+    .select("id", "name");
+```
+
+---
+
+### newBatchScan()
+
+```java
+default BatchScan newBatchScan()
+```
+
+Creates a new `BatchScan` for this table.
+
+**Returns:** A new batch scan
+
+---
+
+### newIncrementalAppendScan()
+
+```java
+default IncrementalAppendScan newIncrementalAppendScan()
+```
+
+Creates a new incremental append scan for this table.
+
+**Returns:** An incremental scan for append-only snapshots
+
+**Throws:** `UnsupportedOperationException` if not supported
+
+---
+
+### newIncrementalChangelogScan()
+
+```java
+default IncrementalChangelogScan newIncrementalChangelogScan()
+```
+
+Creates a new incremental changelog scan for this table.
+
+**Returns:** An incremental changelog scan
+
+**Throws:** `UnsupportedOperationException` if not supported
+
+---
+
+### newPartitionStatisticsScan()
+
+```java
+default PartitionStatisticsScan newPartitionStatisticsScan()
+```
+
+Creates a new partition statistics scan for this table.
+
+**Returns:** A partition statistics scan
+
+**Throws:** `UnsupportedOperationException` if not supported
+
+## Write Operations
+
+### newAppend()
+
+```java
+AppendFiles newAppend()
+```
+
+Creates a new `AppendFiles` API to add files to this table and commit.
+
+**Returns:** A new AppendFiles instance
+
+**Example:**
+```java
+table.newAppend()
+    .appendFile(dataFile)
+    .commit();
+```
+
+---
+
+### newFastAppend()
+
+```java
+default AppendFiles newFastAppend()
+```
+
+Creates a new `AppendFiles` API optimized for fast commits.
+
+<Warning>
+Fast appends skip extra work to commit quickly but may cause split planning to slow down over time. Not recommended for normal writes.
+</Warning>
+
+**Returns:** A new AppendFiles instance
+
+---
+
+### newRewrite()
+
+```java
+RewriteFiles newRewrite()
+```
+
+Creates a new `RewriteFiles` API to replace files in this table and commit.
+
+**Returns:** A new RewriteFiles instance
+
+---
+
+### rewriteManifests()
+
+```java
+RewriteManifests rewriteManifests()
+```
+
+Creates a new `RewriteManifests` API to replace manifests for this table and commit.
+
+**Returns:** A new RewriteManifests instance
+
+---
+
+### newOverwrite()
+
+```java
+OverwriteFiles newOverwrite()
+```
+
+Creates a new `OverwriteFiles` API to overwrite files by a filter expression.
+
+**Returns:** A new OverwriteFiles instance
+
+**Example:**
+```java
+table.newOverwrite()
+    .overwriteByRowFilter(Expressions.equal("date", "2024-01-01"))
+    .addFile(newDataFile)
+    .commit();
+```
+
+---
+
+### newRowDelta()
+
+```java
+RowDelta newRowDelta()
+```
+
+Creates a new `RowDelta` API to remove or replace rows in existing data files.
+
+**Returns:** A new RowDelta instance
+
+---
+
+### newReplacePartitions()
+
+```java
+ReplacePartitions newReplacePartitions()
+```
+
+<Warning>
+Not recommended. This is provided for Hive SQL compatibility. Use `newOverwrite()` instead.
+</Warning>
+
+Creates a new `ReplacePartitions` API to dynamically overwrite partitions.
+
+**Returns:** A new ReplacePartitions instance
+
+---
+
+### newDelete()
+
+```java
+DeleteFiles newDelete()
+```
+
+Creates a new `DeleteFiles` API to delete files in this table and commit.
+
+**Returns:** A new DeleteFiles instance
+
+## Schema and Metadata Evolution
+
+### updateSchema()
+
+```java
+UpdateSchema updateSchema()
+```
+
+Creates a new `UpdateSchema` API to alter the columns of this table and commit the change.
+
+**Returns:** A new UpdateSchema instance
+
+**Example:**
+```java
+table.updateSchema()
+    .addColumn("new_field", Types.StringType.get())
+    .commit();
+```
+
+---
+
+### updateSpec()
+
+```java
+UpdatePartitionSpec updateSpec()
+```
+
+Creates a new `UpdatePartitionSpec` API to alter the partition spec and commit the change.
+
+**Returns:** A new UpdatePartitionSpec instance
+
+---
+
+### updateProperties()
+
+```java
+UpdateProperties updateProperties()
+```
+
+Creates a new `UpdateProperties` API to update table properties and commit the changes.
+
+**Returns:** A new UpdateProperties instance
+
+**Example:**
+```java
+table.updateProperties()
+    .set("write.parquet.compression-codec", "zstd")
+    .commit();
+```
+
+---
+
+### replaceSortOrder()
+
+```java
+ReplaceSortOrder replaceSortOrder()
+```
+
+Creates a new `ReplaceSortOrder` API to set the table sort order and commit the change.
+
+**Returns:** A new ReplaceSortOrder instance
+
+---
+
+### updateLocation()
+
+```java
+UpdateLocation updateLocation()
+```
+
+Creates a new `UpdateLocation` API to update table location and commit the changes.
+
+**Returns:** A new UpdateLocation instance
+
+## Snapshot Management
+
+### expireSnapshots()
+
+```java
+ExpireSnapshots expireSnapshots()
+```
+
+Creates a new `ExpireSnapshots` API to expire snapshots in this table and commit.
+
+**Returns:** A new ExpireSnapshots instance
+
+**Example:**
+```java
+table.expireSnapshots()
+    .expireOlderThan(System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000)
+    .commit();
+```
+
+---
+
+### manageSnapshots()
+
+```java
+ManageSnapshots manageSnapshots()
+```
+
+Creates a new `ManageSnapshots` API to manage snapshots in this table and commit.
+
+**Returns:** A new ManageSnapshots instance
+
+## Statistics
+
+### statisticsFiles()
+
+```java
+List<StatisticsFile> statisticsFiles()
+```
+
+Returns the current statistics files for the table.
+
+**Returns:** List of statistics files
+
+---
+
+### partitionStatisticsFiles()
+
+```java
+default List<PartitionStatisticsFile> partitionStatisticsFiles()
+```
+
+Returns the current partition statistics files for the table.
+
+**Returns:** List of partition statistics files
+
+---
+
+### updateStatistics()
+
+```java
+default UpdateStatistics updateStatistics()
+```
+
+Creates a new `UpdateStatistics` API to add or remove statistics files.
+
+**Returns:** A new UpdateStatistics instance
+
+**Throws:** `UnsupportedOperationException` if not supported
+
+---
+
+### updatePartitionStatistics()
+
+```java
+default UpdatePartitionStatistics updatePartitionStatistics()
+```
+
+Creates a new `UpdatePartitionStatistics` API to add or remove partition statistics files.
+
+**Returns:** A new UpdatePartitionStatistics instance
+
+**Throws:** `UnsupportedOperationException` if not supported
+
+## Transactions
+
+### newTransaction()
+
+```java
+Transaction newTransaction()
+```
+
+Creates a new `Transaction` API to commit multiple table operations at once.
+
+**Returns:** A new Transaction instance
+
+**Example:**
+```java
+Transaction txn = table.newTransaction();
+
+txn.updateSchema()
+   .addColumn("new_field", Types.StringType.get())
+   .commit();
+
+txn.newAppend()
+   .appendFile(dataFile)
+   .commit();
+
+txn.commitTransaction();
+```
+
+## File I/O and Encryption
+
+### io()
+
+```java
+FileIO io()
+```
+
+Returns a `FileIO` instance to read and write table data and metadata files.
+
+**Returns:** The FileIO for this table
+
+---
+
+### encryption()
+
+```java
+EncryptionManager encryption()
+```
+
+Returns an `EncryptionManager` to encrypt and decrypt data files.
+
+**Returns:** The EncryptionManager for this table
+
+---
+
+### locationProvider()
+
+```java
+LocationProvider locationProvider()
+```
+
+Returns a `LocationProvider` to provide locations for new data files.
+
+**Returns:** The LocationProvider for this table
+
+## Usage Examples
+
+### Reading Table Metadata
+
+```java
+Table table = catalog.loadTable(TableIdentifier.of("db", "events"));
+
+System.out.println("Table: " + table.name());
+System.out.println("Schema: " + table.schema());
+System.out.println("Partition spec: " + table.spec());
+System.out.println("Current snapshot: " + table.currentSnapshot().snapshotId());
+```
+
+### Scanning with Filters
+
+```java
+TableScan scan = table.newScan()
+    .filter(Expressions.and(
+        Expressions.greaterThan("timestamp", 1234567890),
+        Expressions.equal("status", "completed")
+    ))
+    .select("id", "timestamp", "user_id");
+
+for (CombinedScanTask task : scan.planTasks()) {
+    // Process scan tasks
+}
+```
+
+### Appending Data
+
+```java
+DataFile dataFile = DataFiles.builder(table.spec())
+    .withPath("/path/to/data.parquet")
+    .withFileSizeInBytes(1024 * 1024)
+    .withRecordCount(1000)
+    .build();
+
+table.newAppend()
+    .appendFile(dataFile)
+    .commit();
+```
+
+### Schema Evolution
+
+```java
+// Add a new column
+table.updateSchema()
+    .addColumn("email", Types.StringType.get())
+    .commit();
+
+// Rename a column
+table.updateSchema()
+    .renameColumn("old_name", "new_name")
+    .commit();
+
+// Delete a column
+table.updateSchema()
+    .deleteColumn("deprecated_field")
+    .commit();
+```
+
+### Time Travel
+
+```java
+// Read from a specific snapshot
+long snapshotId = 12345L;
+TableScan scan = table.newScan()
+    .useSnapshot(snapshotId);
+
+// Read as of a timestamp
+long timestamp = System.currentTimeMillis() - 24 * 60 * 60 * 1000; // 1 day ago
+TableScan historicalScan = table.newScan()
+    .asOfTime(timestamp);
+```
+
+## Source Code Reference
+
+Source: `org/apache/iceberg/Table.java:30`

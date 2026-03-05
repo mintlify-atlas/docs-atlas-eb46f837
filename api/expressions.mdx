@@ -1,0 +1,600 @@
+---
+title: Expressions
+description: Expression API for filtering and predicates in Apache Iceberg
+---
+
+The `Expressions` class provides factory methods for creating filter expressions and predicates in Apache Iceberg.
+
+## Overview
+
+Expressions are used to:
+- Filter data during scans
+- Define partition predicates
+- Specify row-level conditions
+- Create aggregations
+
+All expressions are immutable and can be safely reused.
+
+## Logical Operators
+
+### and()
+
+Combines two expressions with AND logic.
+
+```java
+Expression and(Expression left, Expression right)
+Expression and(Expression left, Expression right, Expression... expressions)
+```
+
+**Example:**
+```java
+import static org.apache.iceberg.expressions.Expressions.*;
+
+Expression expr = and(
+    greaterThan("age", 18),
+    lessThan("age", 65)
+);
+
+// Multiple AND
+Expression multi = and(
+    equal("status", "active"),
+    greaterThan("score", 100),
+    notNull("email")
+);
+```
+
+### or()
+
+Combines two expressions with OR logic.
+
+```java
+Expression or(Expression left, Expression right)
+```
+
+**Example:**
+```java
+Expression expr = or(
+    equal("category", "electronics"),
+    equal("category", "computers")
+);
+```
+
+### not()
+
+Negates an expression.
+
+```java
+Expression not(Expression child)
+```
+
+**Example:**
+```java
+Expression expr = not(equal("deleted", true));
+```
+
+## Comparison Predicates
+
+### equal()
+
+Tests for equality.
+
+```java
+<T> UnboundPredicate<T> equal(String name, T value)
+<T> UnboundPredicate<T> equal(UnboundTerm<T> expr, T value)
+```
+
+**Example:**
+```java
+Expression expr = equal("status", "active");
+Expression numExpr = equal("count", 42);
+```
+
+### notEqual()
+
+Tests for inequality.
+
+```java
+<T> UnboundPredicate<T> notEqual(String name, T value)
+<T> UnboundPredicate<T> notEqual(UnboundTerm<T> expr, T value)
+```
+
+**Example:**
+```java
+Expression expr = notEqual("status", "deleted");
+```
+
+### lessThan()
+
+Tests if value is less than the given value.
+
+```java
+<T> UnboundPredicate<T> lessThan(String name, T value)
+<T> UnboundPredicate<T> lessThan(UnboundTerm<T> expr, T value)
+```
+
+**Example:**
+```java
+Expression expr = lessThan("age", 30);
+Expression dateExpr = lessThan("created_at", timestamp);
+```
+
+### lessThanOrEqual()
+
+Tests if value is less than or equal to the given value.
+
+```java
+<T> UnboundPredicate<T> lessThanOrEqual(String name, T value)
+<T> UnboundPredicate<T> lessThanOrEqual(UnboundTerm<T> expr, T value)
+```
+
+### greaterThan()
+
+Tests if value is greater than the given value.
+
+```java
+<T> UnboundPredicate<T> greaterThan(String name, T value)
+<T> UnboundPredicate<T> greaterThan(UnboundTerm<T> expr, T value)
+```
+
+**Example:**
+```java
+Expression expr = greaterThan("price", 99.99);
+```
+
+### greaterThanOrEqual()
+
+Tests if value is greater than or equal to the given value.
+
+```java
+<T> UnboundPredicate<T> greaterThanOrEqual(String name, T value)
+<T> UnboundPredicate<T> greaterThanOrEqual(UnboundTerm<T> expr, T value)
+```
+
+## String Predicates
+
+### startsWith()
+
+Tests if string starts with a prefix.
+
+```java
+UnboundPredicate<String> startsWith(String name, String value)
+UnboundPredicate<String> startsWith(UnboundTerm<String> expr, String value)
+```
+
+**Example:**
+```java
+Expression expr = startsWith("email", "admin@");
+```
+
+### notStartsWith()
+
+Tests if string does not start with a prefix.
+
+```java
+UnboundPredicate<String> notStartsWith(String name, String value)
+UnboundPredicate<String> notStartsWith(UnboundTerm<String> expr, String value)
+```
+
+**Example:**
+```java
+Expression expr = notStartsWith("username", "test_");
+```
+
+## Null Predicates
+
+### isNull()
+
+Tests if value is null.
+
+```java
+<T> UnboundPredicate<T> isNull(String name)
+<T> UnboundPredicate<T> isNull(UnboundTerm<T> expr)
+```
+
+**Example:**
+```java
+Expression expr = isNull("deleted_at");
+```
+
+### notNull()
+
+Tests if value is not null.
+
+```java
+<T> UnboundPredicate<T> notNull(String name)
+<T> UnboundPredicate<T> notNull(UnboundTerm<T> expr)
+```
+
+**Example:**
+```java
+Expression expr = notNull("email");
+```
+
+### isNaN()
+
+Tests if value is NaN (for floating point types).
+
+```java
+<T> UnboundPredicate<T> isNaN(String name)
+<T> UnboundPredicate<T> isNaN(UnboundTerm<T> expr)
+```
+
+### notNaN()
+
+Tests if value is not NaN.
+
+```java
+<T> UnboundPredicate<T> notNaN(String name)
+<T> UnboundPredicate<T> notNaN(UnboundTerm<T> expr)
+```
+
+## Set Predicates
+
+### in()
+
+Tests if value is in a set of values.
+
+```java
+<T> UnboundPredicate<T> in(String name, T... values)
+<T> UnboundPredicate<T> in(String name, Iterable<T> values)
+<T> UnboundPredicate<T> in(UnboundTerm<T> expr, T... values)
+<T> UnboundPredicate<T> in(UnboundTerm<T> expr, Iterable<T> values)
+```
+
+**Example:**
+```java
+Expression expr = in("status", "pending", "approved", "completed");
+
+List<String> categories = Arrays.asList("A", "B", "C");
+Expression listExpr = in("category", categories);
+```
+
+### notIn()
+
+Tests if value is not in a set of values.
+
+```java
+<T> UnboundPredicate<T> notIn(String name, T... values)
+<T> UnboundPredicate<T> notIn(String name, Iterable<T> values)
+<T> UnboundPredicate<T> notIn(UnboundTerm<T> expr, T... values)
+<T> UnboundPredicate<T> notIn(UnboundTerm<T> expr, Iterable<T> values)
+```
+
+**Example:**
+```java
+Expression expr = notIn("status", "deleted", "archived");
+```
+
+## Transform Functions
+
+### bucket()
+
+Bucket transform.
+
+```java
+<T> UnboundTerm<T> bucket(String name, int numBuckets)
+```
+
+**Example:**
+```java
+Expression expr = equal(bucket("id", 16), 5);
+```
+
+### year()
+
+Year transform for dates and timestamps.
+
+```java
+<T> UnboundTerm<T> year(String name)
+```
+
+**Example:**
+```java
+Expression expr = equal(year("created_at"), 2024);
+```
+
+### month()
+
+Month transform for dates and timestamps.
+
+```java
+<T> UnboundTerm<T> month(String name)
+```
+
+**Example:**
+```java
+Expression expr = equal(month("event_date"), 6); // June
+```
+
+### day()
+
+Day transform for dates and timestamps.
+
+```java
+<T> UnboundTerm<T> day(String name)
+```
+
+**Example:**
+```java
+Expression expr = greaterThan(day("timestamp"), 15);
+```
+
+### hour()
+
+Hour transform for timestamps.
+
+```java
+<T> UnboundTerm<T> hour(String name)
+```
+
+**Example:**
+```java
+Expression expr = equal(hour("event_time"), 14); // 2 PM
+```
+
+### truncate()
+
+Truncate transform.
+
+```java
+<T> UnboundTerm<T> truncate(String name, int width)
+```
+
+**Example:**
+```java
+// Truncate string to 10 characters
+Expression expr = equal(truncate("name", 10), "John Smith");
+```
+
+## Literals
+
+### lit()
+
+Creates a literal from a value.
+
+```java
+<T> Literal<T> lit(T value)
+```
+
+**Example:**
+```java
+Literal<Long> numLit = lit(42L);
+Literal<String> strLit = lit("hello");
+Literal<Boolean> boolLit = lit(true);
+```
+
+### Timestamp Literals
+
+```java
+// Microseconds
+Literal<Long> micros(long micros)
+
+// Milliseconds
+Literal<Long> millis(long millis)
+
+// Nanoseconds
+Literal<Long> nanos(long nanos)
+```
+
+**Example:**
+```java
+long now = System.currentTimeMillis();
+Literal<Long> timestamp = millis(now);
+```
+
+## Aggregates
+
+### count()
+
+Count non-null values.
+
+```java
+<T> UnboundAggregate<T> count(String name)
+```
+
+### countNull()
+
+Count null values.
+
+```java
+<T> UnboundAggregate<T> countNull(String name)
+```
+
+### countStar()
+
+Count all rows.
+
+```java
+<T> UnboundAggregate<T> countStar()
+```
+
+### max()
+
+Maximum value.
+
+```java
+<T> UnboundAggregate<T> max(String name)
+```
+
+### min()
+
+Minimum value.
+
+```java
+<T> UnboundAggregate<T> min(String name)
+```
+
+## Always True/False
+
+### alwaysTrue()
+
+Expression that always evaluates to true.
+
+```java
+True alwaysTrue()
+```
+
+### alwaysFalse()
+
+Expression that always evaluates to false.
+
+```java
+False alwaysFalse()
+```
+
+## Examples
+
+### Basic Filtering
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.TableScan;
+import static org.apache.iceberg.expressions.Expressions.*;
+
+// Simple equality filter
+TableScan scan = table.newScan()
+    .filter(equal("category", "electronics"));
+
+// Range filter
+TableScan rangeScan = table.newScan()
+    .filter(and(
+        greaterThanOrEqual("price", 10.0),
+        lessThan("price", 100.0)
+    ));
+```
+
+### Complex Filters
+
+```java
+import org.apache.iceberg.expressions.Expression;
+
+// Multiple conditions
+Expression filter = and(
+    equal("status", "active"),
+    or(
+        equal("category", "A"),
+        equal("category", "B")
+    ),
+    greaterThan("score", 80),
+    notNull("email")
+);
+
+TableScan scan = table.newScan().filter(filter);
+```
+
+### Date and Time Filtering
+
+```java
+import java.time.Instant;
+
+// Filter by year
+Expression yearFilter = equal(year("event_date"), 2024);
+
+// Filter by month and year
+Expression monthFilter = and(
+    equal(year("event_date"), 2024),
+    equal(month("event_date"), 6)
+);
+
+// Filter by timestamp range
+long startTime = Instant.parse("2024-01-01T00:00:00Z").toEpochMilli();
+long endTime = Instant.parse("2024-12-31T23:59:59Z").toEpochMilli();
+
+Expression timeRange = and(
+    greaterThanOrEqual("timestamp", millis(startTime)),
+    lessThan("timestamp", millis(endTime))
+);
+```
+
+### String Filtering
+
+```java
+// Prefix matching
+Expression prefixFilter = startsWith("email", "admin@");
+
+// Exclude test users
+Expression excludeTest = notStartsWith("username", "test_");
+
+// IN clause
+Expression statusFilter = in(
+    "status",
+    "pending",
+    "approved",
+    "processing"
+);
+```
+
+### Partition Filtering
+
+```java
+// Filter by partitioned column
+Expression partFilter = and(
+    equal("date", "2024-01-15"),
+    equal("region", "us-west")
+);
+
+TableScan scan = table.newScan()
+    .filter(partFilter);
+```
+
+### Null Handling
+
+```java
+// Find records with missing data
+Expression missingData = or(
+    isNull("email"),
+    isNull("phone")
+);
+
+// Find complete records
+Expression completeData = and(
+    notNull("email"),
+    notNull("phone"),
+    notNull("address")
+);
+```
+
+### Dynamic Filter Building
+
+```java
+import java.util.List;
+
+public Expression buildFilter(List<String> statuses) {
+    if (statuses.isEmpty()) {
+        return alwaysTrue();
+    }
+    
+    if (statuses.size() == 1) {
+        return equal("status", statuses.get(0));
+    }
+    
+    return in("status", statuses);
+}
+
+// Usage
+List<String> activeStatuses = Arrays.asList("pending", "processing");
+Expression filter = buildFilter(activeStatuses);
+```
+
+### Combining Transforms
+
+```java
+// Bucket + range filter
+Expression bucketFilter = and(
+    equal(bucket("user_id", 16), 5),
+    greaterThan("score", 100)
+);
+
+// Time-based partitioning
+Expression timePartFilter = and(
+    equal(year("timestamp"), 2024),
+    equal(month("timestamp"), 1),
+    greaterThan(day("timestamp"), 15)
+);
+```
+
+## See Also
+
+- [Types](/api/types) - Type system
+- [Transforms](/api/transforms) - Partition transforms
+- [TableScan](/api/scan/table-scan) - Using filters in scans

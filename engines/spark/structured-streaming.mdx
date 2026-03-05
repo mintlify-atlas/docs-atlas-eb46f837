@@ -1,0 +1,371 @@
+---
+title: 'Spark Structured Streaming'
+description: 'Stream data to and from Iceberg tables using Spark Structured Streaming'
+---
+
+## Overview
+
+Iceberg supports Spark Structured Streaming for both reading and writing data. Streaming is built on Spark's DataSourceV2 API.
+
+## Streaming Reads
+
+Read incremental data starting from a historical timestamp:
+
+```scala
+val df = spark.readStream
+    .format("iceberg")
+    .option("stream-from-timestamp", streamStartTimestamp.toString)
+    .load("database.table_name")
+```
+
+<Warning>
+Iceberg only processes **append snapshots**. Overwrite and delete snapshots cause exceptions by default.
+</Warning>
+
+### Skip Non-Append Snapshots
+
+Ignore overwrite and delete snapshots:
+
+```scala
+val df = spark.readStream
+    .format("iceberg")
+    .option("streaming-skip-overwrite-snapshots", "true")
+    .option("streaming-skip-delete-snapshots", "true")
+    .load("database.table_name")
+```
+
+### Limit Input Rate
+
+Control micro-batch sizes:
+
+<CodeGroup>
+```scala Max Files
+val df = spark.readStream
+    .format("iceberg")
+    .option("streaming-max-files-per-micro-batch", "1")
+    .load("database.table_name")
+```
+
+```scala Max Rows (Soft Limit)
+val df = spark.readStream
+    .format("iceberg")
+    .option("streaming-max-rows-per-micro-batch", "1000")
+    .load("database.table_name")
+```
+
+```scala Both Limits
+val df = spark.readStream
+    .format("iceberg")
+    .option("streaming-max-files-per-micro-batch", "10")
+    .option("streaming-max-rows-per-micro-batch", "10000")
+    .load("database.table_name")
+```
+</CodeGroup>
+
+<Info>
+When both limits are set, the micro-batch stops at whichever limit is reached first.
+</Info>
+
+<Note>
+Rate limiting also works with `Trigger.AvailableNow` to split one-time processing into multiple batches. Limits are ignored with the deprecated `Trigger.Once`.
+</Note>
+
+## Streaming Writes
+
+Write streaming data to Iceberg tables:
+
+<CodeGroup>
+```scala Catalog Table
+data.writeStream
+    .format("iceberg")
+    .outputMode("append")
+    .trigger(Trigger.ProcessingTime(1, TimeUnit.MINUTES))
+    .option("checkpointLocation", checkpointPath)
+    .toTable("database.table_name")
+```
+
+```scala Hadoop Catalog
+data.writeStream
+    .format("iceberg")
+    .outputMode("append")
+    .trigger(Trigger.ProcessingTime(1, TimeUnit.MINUTES))
+    .option("path", "hdfs://nn:8020/path/to/table")
+    .option("checkpointLocation", checkpointPath)
+    .start()
+```
+</CodeGroup>
+
+### Output Modes
+
+Iceberg supports two output modes:
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `append` | Appends each micro-batch | Continuous data ingestion |
+| `complete` | Replaces table contents each micro-batch | Aggregations, stateful operations |
+
+<Warning>
+Iceberg does **not support** experimental continuous processing mode.
+</Warning>
+
+### Create Table Before Streaming
+
+Ensure the table exists before starting the streaming query:
+
+```sql
+CREATE TABLE database.table_name (
+    id bigint,
+    data string,
+    ts timestamp
+) USING iceberg
+PARTITIONED BY (days(ts));
+```
+
+## Partitioned Tables
+
+Iceberg requires data to be sorted by partition value per task.
+
+### Fanout Writer
+
+Avoid repartitioning overhead with the fanout writer:
+
+```scala
+data.writeStream
+    .format("iceberg")
+    .outputMode("append")
+    .trigger(Trigger.ProcessingTime(1, TimeUnit.MINUTES))
+    .option("fanout-enabled", "true")
+    .option("checkpointLocation", checkpointPath)
+    .toTable("database.table_name")
+```
+
+<Info>
+The fanout writer keeps one file open per partition value until the write task finishes.
+</Info>
+
+<Warning>
+**Do not use fanout writer for batch workloads.** Explicit sorting is more efficient for batch writes.
+</Warning>
+
+## Maintenance for Streaming Tables
+
+Streaming writes create metadata quickly. Regular maintenance is essential.
+
+### Tune Commit Rate
+
+Use appropriate trigger intervals:
+
+<CodeGroup>
+```scala Recommended: 1+ Minutes
+data.writeStream
+    .trigger(Trigger.ProcessingTime(1, TimeUnit.MINUTES))
+    // ...
+```
+
+```scala For High-Throughput
+data.writeStream
+    .trigger(Trigger.ProcessingTime(5, TimeUnit.MINUTES))
+    // ...
+```
+</CodeGroup>
+
+<Warning>
+Trigger intervals under 1 minute create excessive metadata.
+</Warning>
+
+### Expire Old Snapshots
+
+Remove old snapshots regularly:
+
+```sql
+CALL catalog.system.expire_snapshots(
+    'database.table_name',
+    older_than => TIMESTAMP '2024-01-01 00:00:00',
+    retain_last => 100
+);
+```
+
+<Info>
+By default, snapshots older than 5 days are expired. Adjust based on your retention requirements.
+</Info>
+
+### Compact Data Files
+
+Streamming writes create many small files. Compact them regularly:
+
+```sql
+-- Compact small files
+CALL catalog.system.rewrite_data_files(
+    table => 'database.table_name',
+    options => map('min-input-files', '5')
+);
+```
+
+### Rewrite Manifests
+
+Optimize manifest files for better query performance:
+
+```sql
+CALL catalog.system.rewrite_manifests('database.table_name');
+```
+
+## Complete Example
+
+End-to-end streaming pipeline:
+
+<Steps>
+  <Step title="Create Table">
+    ```sql
+    CREATE TABLE streaming.events (
+        event_id string,
+        user_id bigint,
+        event_type string,
+        event_time timestamp
+    ) USING iceberg
+    PARTITIONED BY (days(event_time));
+    ```
+  </Step>
+  
+  <Step title="Start Streaming Write">
+    ```scala
+    val streamingData = spark.readStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", "localhost:9092")
+        .option("subscribe", "events")
+        .load()
+    
+    val parsedData = streamingData
+        .selectExpr("CAST(value AS STRING) as json")
+        .select(from_json($"json", schema).as("data"))
+        .select("data.*")
+    
+    parsedData.writeStream
+        .format("iceberg")
+        .outputMode("append")
+        .trigger(Trigger.ProcessingTime(2, TimeUnit.MINUTES))
+        .option("fanout-enabled", "true")
+        .option("checkpointLocation", "/tmp/checkpoint")
+        .toTable("streaming.events")
+    ```
+  </Step>
+  
+  <Step title="Schedule Maintenance">
+    Run these procedures on a schedule:
+    
+    ```sql
+    -- Daily: Expire old snapshots
+    CALL catalog.system.expire_snapshots('streaming.events');
+    
+    -- Weekly: Compact files
+    CALL catalog.system.rewrite_data_files('streaming.events');
+    
+    -- Weekly: Rewrite manifests
+    CALL catalog.system.rewrite_manifests('streaming.events');
+    ```
+  </Step>
+</Steps>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Trigger Intervals">
+    - **Minimum**: 1 minute for most workloads
+    - **Recommended**: 2-5 minutes for high-throughput streams
+    - **High Latency OK**: 10+ minutes for maximum efficiency
+  </Accordion>
+  
+  <Accordion title="Checkpoint Management">
+    Store checkpoints in reliable storage:
+    
+    ```scala
+    .option("checkpointLocation", "s3://bucket/checkpoints/table_name")
+    ```
+    
+    Never delete checkpoints while a query is running.
+  </Accordion>
+  
+  <Accordion title="Partitioning Strategy">
+    For streaming tables:
+    
+    - Use time-based partitioning (hours, days)
+    - Enable fanout writer for partitioned tables
+    - Avoid high-cardinality partitions
+  </Accordion>
+  
+  <Accordion title="Monitoring">
+    Track these metrics:
+    
+    - Micro-batch processing time
+    - Number of files per micro-batch
+    - Table snapshot count
+    - File sizes in recent partitions
+  </Accordion>
+  
+  <Accordion title="Maintenance Schedule">
+    Recommended schedule:
+    
+    | Task | Frequency | Purpose |
+    |------|-----------|----------|
+    | Expire snapshots | Daily | Remove old metadata |
+    | Compact files | Weekly | Reduce small files |
+    | Rewrite manifests | Weekly | Optimize scan planning |
+    | Remove orphans | Monthly | Clean up unused files |
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Too Many Small Files">
+    **Symptoms**: Slow queries, high metadata overhead
+    
+    **Solutions**:
+    - Increase trigger interval
+    - Run `rewrite_data_files` more frequently
+    - Increase `target-file-size-bytes`
+  </Accordion>
+  
+  <Accordion title="High Metadata Overhead">
+    **Symptoms**: Slow query planning, large metadata files
+    
+    **Solutions**:
+    - Expire snapshots more aggressively
+    - Run `rewrite_manifests`
+    - Reduce commit frequency
+  </Accordion>
+  
+  <Accordion title="Overwrite Snapshot Errors">
+    **Symptoms**: Streaming query fails on overwrite snapshots
+    
+    **Solutions**:
+    ```scala
+    .option("streaming-skip-overwrite-snapshots", "true")
+    ```
+  </Accordion>
+  
+  <Accordion title="Out of Memory">
+    **Symptoms**: Driver or executor OOM
+    
+    **Solutions**:
+    - Reduce micro-batch size with `streaming-max-files-per-micro-batch`
+    - Increase executor memory
+    - Enable `streaming-skip-delete-snapshots`
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Procedures" icon="gears" href="/engines/spark/procedures">
+    Learn about maintenance procedures
+  </Card>
+  <Card title="Writes" icon="pen" href="/engines/spark/writes">
+    Understand write distribution modes
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/engines/spark/configuration">
+    Configure streaming options
+  </Card>
+  <Card title="Queries" icon="search" href="/engines/spark/queries">
+    Query streaming tables
+  </Card>
+</CardGroup>

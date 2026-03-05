@@ -1,0 +1,105 @@
+---
+title: Actions API Overview
+description: Overview of Apache Iceberg Actions API for table maintenance operations
+---
+
+# Actions API
+
+The Actions API provides a high-level interface for performing table maintenance operations in Apache Iceberg. Actions are designed to work with query engines like Apache Spark to distribute parts of the work.
+
+## What are Actions?
+
+Actions are operations performed on Iceberg tables that extend beyond basic read/write operations. They are typically maintenance tasks that optimize table performance, clean up old data, or reorganize table structure.
+
+All actions implement the base `Action` interface:
+
+```java
+public interface Action<ThisT, R> {
+  ThisT option(String name, String value);
+  ThisT options(Map<String, String> options);
+  R execute();
+}
+```
+
+## Available Actions
+
+Iceberg provides several built-in actions for common maintenance tasks:
+
+### Data Management
+- **[ExpireSnapshots](/api/actions/expire-snapshots)** - Remove old snapshots and their associated files
+- **[RewriteDataFiles](/api/actions/rewrite-data-files)** - Optimize file layout and size
+- **[DeleteOrphanFiles](/api/actions/delete-orphan-files)** - Remove orphaned files not referenced by any snapshot
+
+### Metadata Management
+- **[RewriteManifests](/api/actions/rewrite-manifests)** - Optimize manifest file organization
+- **[ComputeTableStats](/api/actions/compute-table-stats)** - Collect and store table statistics
+
+## Using Actions
+
+Actions are obtained through an `ActionsProvider` implementation. The typical workflow is:
+
+1. Get an action instance from the provider
+2. Configure the action with options
+3. Execute the action
+4. Process the result
+
+### Example
+
+```java
+// Get an action
+ExpireSnapshots action = actions.expireSnapshots(table);
+
+// Configure it
+action
+  .expireOlderThan(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(7))
+  .retainLast(5);
+
+// Execute and get results
+ExpireSnapshots.Result result = action.execute();
+
+System.out.println("Deleted " + result.deletedDataFilesCount() + " data files");
+```
+
+## Common Patterns
+
+### Configuring Actions
+
+All actions support configuration through:
+- Method chaining with specific configuration methods
+- Generic `option()` and `options()` methods for advanced settings
+
+```java
+action
+  .option("max-concurrent-deletes", "10")
+  .options(Map.of(
+    "custom-setting", "value",
+    "another-setting", "value"
+  ));
+```
+
+### Results
+
+Each action returns a result object containing execution summary information:
+
+```java
+Result result = action.execute();
+// Access result-specific metrics
+long filesDeleted = result.deletedDataFilesCount();
+```
+
+## Implementation Notes
+
+- Actions may use query engines to distribute work across a cluster
+- Some actions modify table metadata and create new snapshots
+- Actions are designed to be safe and atomic where possible
+- Long-running actions may support partial progress and retry mechanisms
+
+## Next Steps
+
+Explore the specific action documentation to learn about configuration options and use cases:
+
+- [ExpireSnapshots](/api/actions/expire-snapshots)
+- [RewriteDataFiles](/api/actions/rewrite-data-files)
+- [RewriteManifests](/api/actions/rewrite-manifests)
+- [DeleteOrphanFiles](/api/actions/delete-orphan-files)
+- [ComputeTableStats](/api/actions/compute-table-stats)

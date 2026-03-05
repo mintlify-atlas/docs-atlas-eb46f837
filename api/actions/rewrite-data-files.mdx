@@ -1,0 +1,299 @@
+---
+title: RewriteDataFiles Action
+description: API reference for the RewriteDataFiles action that optimizes data file layout and size
+---
+
+# RewriteDataFiles
+
+The `RewriteDataFiles` action rewrites data files according to a rewrite strategy to optimize file sizing and layout within a table. This is commonly used for compaction and data optimization.
+
+## Interface
+
+```java
+public interface RewriteDataFiles extends SnapshotUpdate<RewriteDataFiles, RewriteDataFiles.Result>
+```
+
+## Overview
+
+Rewriting data files helps maintain optimal query performance by:
+- Combining small files into larger ones (compaction)
+- Splitting large files into smaller ones
+- Reorganizing data by sort order or Z-order
+- Aligning data with new partition specifications
+
+## Configuration Options
+
+### Partial Progress
+
+**`partial-progress.enabled`** (default: `false`)
+
+Enable committing groups of files before the entire rewrite completes.
+
+**`partial-progress.max-commits`** (default: `10`)
+
+Maximum number of commits when partial progress is enabled.
+
+**`partial-progress.max-failed-commits`**
+
+Maximum number of failed commits allowed.
+
+### File Grouping
+
+**`max-file-group-size-bytes`** (default: `100 GB`)
+
+Maximum data size to compact in a single file group. Helps prevent resource exhaustion when rewriting large partitions.
+
+**`max-concurrent-file-group-rewrites`** (default: `5`)
+
+Maximum number of file groups to rewrite simultaneously.
+
+### File Sizing
+
+**`target-file-size-bytes`**
+
+Target output file size. Defaults to the table's `write.target-file-size-bytes` property.
+
+### Advanced Options
+
+**`use-starting-sequence-number`** (default: `true`)
+
+Use the sequence number from compaction start time instead of the new snapshot's sequence number. This avoids conflicts with newer equality deletes.
+
+**`remove-dangling-deletes`** (default: `false`)
+
+Remove delete files that don't apply to any live data files after compaction.
+
+**`rewrite-job-order`** (default: `none`)
+
+Order for processing file groups: `bytes-asc`, `bytes-desc`, `files-asc`, `files-desc`, or `none`.
+
+**`output-spec-id`**
+
+Partition specification ID for rewritten files. Used to reorganize data with a new partitioning scheme.
+
+## Methods
+
+### Strategy Selection
+
+#### binPack
+
+Use the BINPACK strategy to combine small files.
+
+```java
+RewriteDataFiles binPack()
+```
+
+**Example:**
+```java
+action.binPack();
+```
+
+#### sort
+
+Use the SORT strategy with the table's sort order.
+
+```java
+RewriteDataFiles sort()
+```
+
+**Example:**
+```java
+action.sort();
+```
+
+#### sort (with custom order)
+
+Use the SORT strategy with a custom sort order.
+
+```java
+RewriteDataFiles sort(SortOrder sortOrder)
+```
+
+**Parameters:**
+- `sortOrder` - Custom sort order to use
+
+**Example:**
+```java
+SortOrder order = SortOrder.builderFor(table.schema())
+  .asc("timestamp")
+  .asc("id")
+  .build();
+action.sort(order);
+```
+
+#### zOrder
+
+Use the Z-ORDER strategy for multi-dimensional clustering.
+
+```java
+RewriteDataFiles zOrder(String... columns)
+```
+
+**Parameters:**
+- `columns` - Column names to use for Z-ordering
+
+**Example:**
+```java
+action.zOrder("date", "customer_id");
+```
+
+### Filtering
+
+#### filter
+
+Filter which files to consider for rewriting.
+
+```java
+RewriteDataFiles filter(Expression expression)
+```
+
+**Parameters:**
+- `expression` - Iceberg expression to filter files
+
+**Example:**
+```java
+// Only rewrite files in a specific partition
+action.filter(Expressions.equal("date", "2024-01-01"));
+```
+
+## Result
+
+The `Result` interface provides statistics about the rewrite operation.
+
+### Methods
+
+```java
+interface Result {
+  List<FileGroupRewriteResult> rewriteResults();
+  List<FileGroupFailureResult> rewriteFailures();
+  int addedDataFilesCount();
+  int rewrittenDataFilesCount();
+  long rewrittenBytesCount();
+  int failedDataFilesCount();
+  int removedDeleteFilesCount();
+}
+```
+
+### FileGroupRewriteResult
+
+```java
+interface FileGroupRewriteResult {
+  FileGroupInfo info();
+  int addedDataFilesCount();
+  int rewrittenDataFilesCount();
+  long rewrittenBytesCount();
+  int removedDeleteFilesCount();
+}
+```
+
+## Usage Examples
+
+### Basic Compaction
+
+```java
+// Compact small files using BINPACK strategy
+RewriteDataFiles.Result result = actions
+  .rewriteDataFiles(table)
+  .binPack()
+  .execute();
+
+System.out.println("Rewrote " + result.rewrittenDataFilesCount() + " files");
+System.out.println("Created " + result.addedDataFilesCount() + " new files");
+```
+
+### Sort Optimization
+
+```java
+// Rewrite files with sorting
+SortOrder order = SortOrder.builderFor(table.schema())
+  .asc("event_time")
+  .asc("user_id")
+  .build();
+
+RewriteDataFiles.Result result = actions
+  .rewriteDataFiles(table)
+  .sort(order)
+  .option("target-file-size-bytes", String.valueOf(512 * 1024 * 1024)) // 512 MB
+  .execute();
+```
+
+### Z-Order Clustering
+
+```java
+// Z-order for multi-dimensional queries
+RewriteDataFiles.Result result = actions
+  .rewriteDataFiles(table)
+  .zOrder("date", "customer_id", "product_id")
+  .execute();
+```
+
+### Partition-Specific Rewrite
+
+```java
+// Rewrite only specific partitions
+RewriteDataFiles.Result result = actions
+  .rewriteDataFiles(table)
+  .filter(Expressions.and(
+    Expressions.greaterThanOrEqual("date", "2024-01-01"),
+    Expressions.lessThan("date", "2024-02-01")
+  ))
+  .binPack()
+  .execute();
+```
+
+### With Partial Progress
+
+```java
+// Enable partial progress for large rewrites
+RewriteDataFiles.Result result = actions
+  .rewriteDataFiles(table)
+  .binPack()
+  .option("partial-progress.enabled", "true")
+  .option("partial-progress.max-commits", "20")
+  .option("max-concurrent-file-group-rewrites", "10")
+  .execute();
+
+System.out.println("Summary:");
+System.out.println("  Rewrote: " + result.rewrittenDataFilesCount() + " files");
+System.out.println("  Created: " + result.addedDataFilesCount() + " files");
+System.out.println("  Bytes processed: " + result.rewrittenBytesCount());
+System.out.println("  Failed files: " + result.failedDataFilesCount());
+```
+
+### Remove Dangling Deletes
+
+```java
+// Compact and remove orphaned delete files
+RewriteDataFiles.Result result = actions
+  .rewriteDataFiles(table)
+  .binPack()
+  .option("remove-dangling-deletes", "true")
+  .execute();
+
+System.out.println("Removed " + result.removedDeleteFilesCount() + " delete files");
+```
+
+## Best Practices
+
+1. **Choose the right strategy**:
+   - Use BINPACK for general compaction
+   - Use SORT when query patterns favor sorted data
+   - Use Z-ORDER for multi-dimensional range queries
+
+2. **Set appropriate file sizes**: Target sizes between 128MB and 1GB depending on your workload
+
+3. **Use filters for incremental optimization**: Rewrite only problematic partitions
+
+4. **Enable partial progress for large tables**: Prevents losing all work on failure
+
+5. **Monitor resource usage**: Adjust concurrency settings based on cluster capacity
+
+<Warning>
+Rewriting data files creates a new snapshot. Old data remains accessible through previous snapshots until they are expired.
+</Warning>
+
+## Related
+
+- [RewriteManifests](/api/actions/rewrite-manifests) - Optimize manifest file organization
+- [ExpireSnapshots](/api/actions/expire-snapshots) - Clean up old snapshots after rewriting
+- [DeleteOrphanFiles](/api/actions/delete-orphan-files) - Remove unreferenced files

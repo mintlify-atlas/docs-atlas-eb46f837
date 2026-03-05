@@ -1,0 +1,573 @@
+---
+title: RowDelta
+description: API for encoding row-level changes in Apache Iceberg tables
+---
+
+The `RowDelta` interface provides an API for encoding row-level changes to an Iceberg table, including inserts, updates, and deletes using delete files.
+
+## Overview
+
+RowDelta accumulates data and delete file changes, produces a new snapshot of the table, and commits that snapshot as the current. This is the primary interface for implementing UPDATE, DELETE, and MERGE operations at the row level.
+
+## Interface
+
+```java
+public interface RowDelta extends SnapshotUpdate<RowDelta>
+```
+
+## Core Methods
+
+### addRows()
+
+Adds a data file of rows to insert.
+
+```java
+RowDelta addRows(DataFile inserts)
+```
+
+**Parameters:**
+- `inserts` - A data file of rows to insert
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DataFile newData = DataFiles.builder(spec)
+    .withPath("/data/inserts.parquet")
+    .withRecordCount(1000)
+    .build();
+
+table.newRowDelta()
+    .addRows(newData)
+    .commit();
+```
+
+### addDeletes()
+
+Adds a delete file of rows to delete.
+
+```java
+RowDelta addDeletes(DeleteFile deletes)
+```
+
+**Parameters:**
+- `deletes` - A delete file of rows to delete
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DeleteFile deleteFile = FileMetadata.deleteFileBuilder(spec)
+    .ofPositionDeletes()
+    .withPath("/deletes/delete-001.parquet")
+    .withRecordCount(50)
+    .build();
+
+table.newRowDelta()
+    .addDeletes(deleteFile)
+    .commit();
+```
+
+### removeRows()
+
+Removes a data file from the table.
+
+```java
+default RowDelta removeRows(DataFile file)
+```
+
+**Parameters:**
+- `file` - A data file to remove
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DataFile oldFile = ...;
+
+table.newRowDelta()
+    .removeRows(oldFile)
+    .addRows(updatedFile)
+    .commit();
+```
+
+### removeDeletes()
+
+Removes a rewritten delete file from the table.
+
+```java
+default RowDelta removeDeletes(DeleteFile deletes)
+```
+
+**Parameters:**
+- `deletes` - A delete file that can be removed from the table
+
+**Returns:** This for method chaining
+
+**Description:**
+Used when rewriting or consolidating delete files.
+
+## Validation Methods
+
+### validateFromSnapshot()
+
+Sets the snapshot ID used in any reads for this operation.
+
+```java
+RowDelta validateFromSnapshot(long snapshotId)
+```
+
+**Parameters:**
+- `snapshotId` - A snapshot ID
+
+**Returns:** This for method chaining
+
+**Description:**
+Validations will check changes after this snapshot ID. If not set, all ancestor snapshots through the table's initial snapshot are validated.
+
+### caseSensitive()
+
+Enables or disables case sensitive expression binding.
+
+```java
+RowDelta caseSensitive(boolean caseSensitive)
+```
+
+**Parameters:**
+- `caseSensitive` - Whether expression binding should be case sensitive
+
+**Returns:** This for method chaining
+
+### validateDataFilesExist()
+
+Adds data file paths that must not be removed by conflicting commits.
+
+```java
+RowDelta validateDataFilesExist(Iterable<? extends CharSequence> referencedFiles)
+```
+
+**Parameters:**
+- `referencedFiles` - File paths that are referenced by a position delete file
+
+**Returns:** This for method chaining
+
+**Description:**
+If any path has been removed by a conflicting commit since the snapshot passed to `validateFromSnapshot()`, the operation will fail with a ValidationException.
+
+By default, this validation checks only rewrite and overwrite commits. To apply validation to delete commits, call `validateDeletedFiles()`.
+
+### validateDeletedFiles()
+
+Enables validation that referenced data files have not been removed by a delete operation.
+
+```java
+RowDelta validateDeletedFiles()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+If a data file has a row deleted using a position delete file, deleting the data file concurrently could be part of a transaction that reads and re-appends a row. This method validates deletes for the transaction case.
+
+### conflictDetectionFilter()
+
+Sets a conflict detection filter for validating concurrent changes.
+
+```java
+RowDelta conflictDetectionFilter(Expression conflictDetectionFilter)
+```
+
+**Parameters:**
+- `conflictDetectionFilter` - An expression on rows in the table
+
+**Returns:** This for method chaining
+
+**Description:**
+If not called, a true literal will be used as the conflict detection filter.
+
+### validateNoConflictingDataFiles()
+
+Enables validation that concurrently added data files do not conflict.
+
+```java
+RowDelta validateNoConflictingDataFiles()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+Required to maintain serializable isolation for update/delete operations. Otherwise, the isolation level will be snapshot isolation.
+
+Validation uses the conflict detection filter and applies to operations that happened after the snapshot passed to `validateFromSnapshot()`.
+
+### validateNoConflictingDeleteFiles()
+
+Enables validation that concurrently added delete files do not conflict.
+
+```java
+RowDelta validateNoConflictingDeleteFiles()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+Must be called when the table is queried to produce a row delta for UPDATE and MERGE operations independently of the isolation level. Not required for DELETE operations.
+
+## Examples
+
+### Basic Row Delete
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.RowDelta;
+import org.apache.iceberg.DeleteFile;
+import org.apache.iceberg.FileMetadata;
+
+// Create position delete file
+DeleteFile deletes = FileMetadata.deleteFileBuilder(table.spec())
+    .ofPositionDeletes()
+    .withPath("/deletes/position-deletes-001.parquet")
+    .withFileSizeInBytes(2048)
+    .withRecordCount(100)
+    .build();
+
+// Apply delete
+table.newRowDelta()
+    .addDeletes(deletes)
+    .commit();
+
+System.out.println("Applied 100 row deletes");
+```
+
+### Update Operation (Delete + Insert)
+
+```java
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataFiles;
+
+// Update by deleting old rows and inserting new rows
+DeleteFile deletedRows = createDeleteFile(rowsToUpdate);
+DataFile insertedRows = createDataFile(updatedRows);
+
+table.newRowDelta()
+    .addDeletes(deletedRows)
+    .addRows(insertedRows)
+    .commit();
+
+System.out.println("Updated rows via row delta");
+```
+
+### Merge Operation
+
+```java
+// Merge operation: insert new, update existing, delete obsolete
+DataFile newRows = createDataFile(insertsFromMerge);
+DeleteFile updatedRows = createDeleteFile(rowsToUpdate);
+DataFile updatesAsInserts = createDataFile(updateValues);
+DeleteFile deletedRows = createDeleteFile(rowsToDelete);
+
+table.newRowDelta()
+    .addRows(newRows)              // Insert new rows
+    .addDeletes(updatedRows)        // Delete old versions of updated rows
+    .addRows(updatesAsInserts)      // Insert updated rows
+    .addDeletes(deletedRows)        // Delete obsolete rows
+    .commit();
+```
+
+### Row Delta with Validation
+
+```java
+import org.apache.iceberg.Snapshot;
+import java.util.List;
+
+// Read snapshot for validation
+Snapshot readSnapshot = table.currentSnapshot();
+long readSnapshotId = readSnapshot.snapshotId();
+
+// Collect referenced files
+List<String> referencedFiles = getReferencedDataFiles();
+
+// Create delete file
+DeleteFile deletes = createPositionDeletes();
+
+// Apply with validation
+table.newRowDelta()
+    .addDeletes(deletes)
+    .validateFromSnapshot(readSnapshotId)
+    .validateDataFilesExist(referencedFiles)
+    .commit();
+```
+
+### Serializable Update
+
+```java
+import org.apache.iceberg.expressions.Expressions;
+import org.apache.iceberg.expressions.Expression;
+
+// Read data and snapshot
+long readSnapshotId = table.currentSnapshot().snapshotId();
+
+// Identify rows to update
+Expression filter = Expressions.equal("status", "pending");
+
+// Create delete and data files
+DeleteFile deletes = createDeletesForFilter(filter);
+DataFile updates = createUpdatedData();
+
+// Apply with serializable isolation
+table.newRowDelta()
+    .addDeletes(deletes)
+    .addRows(updates)
+    .validateFromSnapshot(readSnapshotId)
+    .conflictDetectionFilter(filter)
+    .validateNoConflictingDataFiles()
+    .validateNoConflictingDeleteFiles()
+    .commit();
+```
+
+### Position Delete with File References
+
+```java
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.TableScan;
+import org.apache.iceberg.io.CloseableIterable;
+import java.util.Set;
+import java.util.HashSet;
+
+// Scan to find files with rows to delete
+TableScan scan = table.newScan()
+    .filter(Expressions.equal("category", "archived"));
+
+Set<String> referencedFiles = new HashSet<>();
+
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+    for (FileScanTask task : tasks) {
+        referencedFiles.add(task.file().path().toString());
+    }
+}
+
+// Create position deletes
+DeleteFile deletes = createPositionDeletes(referencedFiles);
+
+// Apply with validation
+table.newRowDelta()
+    .addDeletes(deletes)
+    .validateDataFilesExist(referencedFiles)
+    .commit();
+```
+
+### Rewriting Delete Files
+
+```java
+// Consolidate multiple delete files into one
+List<DeleteFile> oldDeleteFiles = findDeleteFilesToRewrite();
+DeleteFile consolidatedDeletes = consolidateDeletes(oldDeleteFiles);
+
+RowDelta delta = table.newRowDelta();
+
+// Remove old delete files
+for (DeleteFile old : oldDeleteFiles) {
+    delta.removeDeletes(old);
+}
+
+// Add consolidated delete file
+delta.addDeletes(consolidatedDeletes)
+     .commit();
+
+System.out.println("Consolidated " + oldDeleteFiles.size() + 
+    " delete files into 1");
+```
+
+### File Rewrite with Row Delta
+
+```java
+// Rewrite a data file to apply deletes
+DataFile originalFile = findFileToRewrite();
+List<DeleteFile> deleteFiles = findDeletesForFile(originalFile);
+
+// Rewrite file without deleted rows
+DataFile rewrittenFile = rewriteFileWithoutDeletes(
+    originalFile, 
+    deleteFiles
+);
+
+// Apply changes
+RowDelta delta = table.newRowDelta();
+
+// Remove original file and its delete files
+delta.removeRows(originalFile);
+for (DeleteFile deleteFile : deleteFiles) {
+    delta.removeDeletes(deleteFile);
+}
+
+// Add rewritten file
+delta.addRows(rewrittenFile)
+     .commit();
+```
+
+### Equality Delete
+
+```java
+// Create equality delete file
+DeleteFile equalityDeletes = FileMetadata.deleteFileBuilder(spec)
+    .ofEqualityDeletes()
+    .withPath("/deletes/equality-deletes-001.parquet")
+    .withRecordCount(200)
+    .build();
+
+table.newRowDelta()
+    .addDeletes(equalityDeletes)
+    .commit();
+```
+
+### Concurrent Modification Protection
+
+```java
+import org.apache.iceberg.exceptions.ValidationException;
+
+public void safeRowDelta(Table table, 
+                         DeleteFile deletes,
+                         DataFile inserts,
+                         Expression filter) {
+    long readSnapshot = table.currentSnapshot().snapshotId();
+    
+    try {
+        table.newRowDelta()
+            .addDeletes(deletes)
+            .addRows(inserts)
+            .validateFromSnapshot(readSnapshot)
+            .conflictDetectionFilter(filter)
+            .validateNoConflictingDataFiles()
+            .validateNoConflictingDeleteFiles()
+            .commit();
+        
+        System.out.println("Row delta committed successfully");
+        
+    } catch (ValidationException e) {
+        System.err.println("Concurrent modification detected: " + 
+            e.getMessage());
+        // Retry or handle conflict
+    }
+}
+```
+
+### Delete with File Existence Validation
+
+```java
+import java.util.List;
+import java.util.ArrayList;
+
+// Position deletes reference specific data files
+List<String> dataFiles = new ArrayList<>();
+dataFiles.add("/data/file-001.parquet");
+dataFiles.add("/data/file-002.parquet");
+
+DeleteFile positionDeletes = createPositionDeletes(dataFiles);
+
+table.newRowDelta()
+    .addDeletes(positionDeletes)
+    .validateDataFilesExist(dataFiles)
+    .validateDeletedFiles()  // Also check for concurrent deletes
+    .commit();
+```
+
+### Complex Merge with Multiple Deltas
+
+```java
+public void executeMerge(
+        Table table,
+        List<DataFile> inserts,
+        List<DeleteFile> deletes,
+        List<DataFile> updates) {
+    
+    long readSnapshot = table.currentSnapshot().snapshotId();
+    Expression conflictFilter = Expressions.alwaysTrue();
+    
+    RowDelta delta = table.newRowDelta()
+        .validateFromSnapshot(readSnapshot)
+        .conflictDetectionFilter(conflictFilter)
+        .validateNoConflictingDataFiles()
+        .validateNoConflictingDeleteFiles();
+    
+    // Add all inserts
+    for (DataFile insert : inserts) {
+        delta.addRows(insert);
+    }
+    
+    // Add all deletes
+    for (DeleteFile delete : deletes) {
+        delta.addDeletes(delete);
+    }
+    
+    // Add all updates (as new rows)
+    for (DataFile update : updates) {
+        delta.addRows(update);
+    }
+    
+    delta.commit();
+    
+    System.out.println(String.format(
+        "Merge complete: %d inserts, %d deletes, %d updates",
+        inserts.size(), deletes.size(), updates.size()
+    ));
+}
+```
+
+## Isolation Levels
+
+### Snapshot Isolation (Default)
+
+```java
+// Default behavior - snapshot isolation
+table.newRowDelta()
+    .addDeletes(deletes)
+    .addRows(inserts)
+    .commit();
+```
+
+### Serializable Isolation
+
+```java
+// Full conflict detection - serializable isolation
+table.newRowDelta()
+    .addDeletes(deletes)
+    .addRows(inserts)
+    .validateFromSnapshot(readSnapshot)
+    .conflictDetectionFilter(filter)
+    .validateNoConflictingDataFiles()
+    .validateNoConflictingDeleteFiles()
+    .commit();
+```
+
+## Delete File Types
+
+### Position Deletes
+
+Delete specific rows by file and position:
+
+```java
+DeleteFile positionDeletes = FileMetadata.deleteFileBuilder(spec)
+    .ofPositionDeletes()
+    .withPath("/deletes/pos-del.parquet")
+    .withRecordCount(100)
+    .build();
+```
+
+### Equality Deletes
+
+Delete rows matching equality conditions:
+
+```java
+DeleteFile equalityDeletes = FileMetadata.deleteFileBuilder(spec)
+    .ofEqualityDeletes()
+    .withPath("/deletes/eq-del.parquet")
+    .withRecordCount(50)
+    .build();
+```
+
+## See Also
+
+- [AppendFiles](/api/write/append-files) - Append files to a table
+- [OverwriteFiles](/api/write/overwrite-files) - Overwrite files in a table
+- [DeleteFiles](/api/write/delete-files) - Delete files from a table
+- [DeleteFile](/api/delete-file) - Delete file metadata

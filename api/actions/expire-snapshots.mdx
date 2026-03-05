@@ -1,0 +1,231 @@
+---
+title: ExpireSnapshots Action
+description: API reference for the ExpireSnapshots action that removes old snapshots and cleans up associated files
+---
+
+# ExpireSnapshots
+
+The `ExpireSnapshots` action removes old snapshots from a table and deletes data files that are no longer needed. This is essential for managing storage costs and maintaining table performance.
+
+## Interface
+
+```java
+public interface ExpireSnapshots extends Action<ExpireSnapshots, ExpireSnapshots.Result>
+```
+
+## Overview
+
+The ExpireSnapshots action is similar to the table API's `ExpireSnapshots` operation but can leverage a query engine to distribute the deletion work. It safely removes:
+
+- Old snapshot metadata
+- Manifest files no longer referenced
+- Data and delete files orphaned by expired snapshots
+- Statistics files associated with expired snapshots
+- Optionally, unused partition specs and schemas
+
+## Methods
+
+### expireSnapshotId
+
+Expires a specific snapshot identified by its ID.
+
+```java
+ExpireSnapshots expireSnapshotId(long snapshotId)
+```
+
+**Parameters:**
+- `snapshotId` - The ID of the snapshot to expire
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+action.expireSnapshotId(1234567890L);
+```
+
+### expireOlderThan
+
+Expires all snapshots older than the given timestamp.
+
+```java
+ExpireSnapshots expireOlderThan(long timestampMillis)
+```
+
+**Parameters:**
+- `timestampMillis` - A timestamp in milliseconds (from `System.currentTimeMillis()`)
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Expire snapshots older than 7 days
+long sevenDaysAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(7);
+action.expireOlderThan(sevenDaysAgo);
+```
+
+### retainLast
+
+Retains the most recent ancestors of the current snapshot, even if they would otherwise be expired.
+
+```java
+ExpireSnapshots retainLast(int numSnapshots)
+```
+
+**Parameters:**
+- `numSnapshots` - The number of recent snapshots to retain
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Always keep the last 5 snapshots
+action.retainLast(5);
+```
+
+<Note>
+Snapshots explicitly marked for expiration by ID will still be removed, even if they are among the most recent.
+</Note>
+
+### deleteWith
+
+Provides a custom delete function for removing files.
+
+```java
+ExpireSnapshots deleteWith(Consumer<String> deleteFunc)
+```
+
+**Parameters:**
+- `deleteFunc` - A function that accepts file paths to delete
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+action.deleteWith(path -> {
+  System.out.println("Deleting: " + path);
+  // Custom delete logic
+});
+```
+
+### executeDeleteWith
+
+Provides an executor service for parallel file deletion.
+
+```java
+ExpireSnapshots executeDeleteWith(ExecutorService executorService)
+```
+
+**Parameters:**
+- `executorService` - The executor service to use for parallel deletes
+
+**Returns:** `this` for method chaining
+
+<Note>
+This is only used if a custom delete function is provided or if the FileIO doesn't support bulk deletes.
+</Note>
+
+### cleanExpiredMetadata
+
+Enables removal of unused table metadata like partition specs and schemas.
+
+```java
+ExpireSnapshots cleanExpiredMetadata(boolean clean)
+```
+
+**Parameters:**
+- `clean` - `true` to remove unused metadata, `false` to keep it
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+action.cleanExpiredMetadata(true);
+```
+
+## Result
+
+The `Result` interface provides statistics about the expiration operation.
+
+### Methods
+
+```java
+interface Result {
+  long deletedDataFilesCount();
+  long deletedEqualityDeleteFilesCount();
+  long deletedPositionDeleteFilesCount();
+  long deletedManifestsCount();
+  long deletedManifestListsCount();
+  long deletedStatisticsFilesCount();
+}
+```
+
+## Usage Examples
+
+### Basic Expiration
+
+```java
+// Expire snapshots older than 30 days
+ExpireSnapshots.Result result = actions
+  .expireSnapshots(table)
+  .expireOlderThan(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30))
+  .execute();
+
+System.out.println("Deleted " + result.deletedDataFilesCount() + " data files");
+```
+
+### Retain Recent Snapshots
+
+```java
+// Expire old snapshots but keep the last 10
+ExpireSnapshots.Result result = actions
+  .expireSnapshots(table)
+  .expireOlderThan(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(7))
+  .retainLast(10)
+  .execute();
+```
+
+### Expire Specific Snapshot
+
+```java
+// Expire a specific snapshot by ID
+ExpireSnapshots.Result result = actions
+  .expireSnapshots(table)
+  .expireSnapshotId(1234567890L)
+  .execute();
+```
+
+### With Metadata Cleanup
+
+```java
+// Expire snapshots and clean up unused metadata
+ExpireSnapshots.Result result = actions
+  .expireSnapshots(table)
+  .expireOlderThan(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30))
+  .cleanExpiredMetadata(true)
+  .execute();
+
+System.out.println("Summary:");
+System.out.println("  Data files: " + result.deletedDataFilesCount());
+System.out.println("  Delete files: " + 
+  (result.deletedEqualityDeleteFilesCount() + result.deletedPositionDeleteFilesCount()));
+System.out.println("  Manifests: " + result.deletedManifestsCount());
+System.out.println("  Manifest lists: " + result.deletedManifestListsCount());
+```
+
+## Best Practices
+
+<Warning>
+Always use `retainLast()` to prevent accidentally expiring all snapshots, which would make time travel impossible.
+</Warning>
+
+1. **Set reasonable retention periods**: Balance storage costs with the need for time travel
+2. **Use retainLast() as a safety net**: Always keep a minimum number of snapshots
+3. **Monitor storage**: Track the result metrics to understand storage savings
+4. **Schedule regular expiration**: Run this action periodically to prevent unbounded growth
+5. **Test in development**: Verify expiration behavior before running in production
+
+## Related
+
+- [DeleteOrphanFiles](/api/actions/delete-orphan-files) - Remove files not referenced by any snapshot
+- [RewriteDataFiles](/api/actions/rewrite-data-files) - Optimize data file layout
+- [Table API ExpireSnapshots](/api/table-operations#expire-snapshots) - Low-level snapshot expiration

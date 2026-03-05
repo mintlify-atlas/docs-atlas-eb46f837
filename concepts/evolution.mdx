@@ -1,0 +1,492 @@
+---
+title: "Evolution"
+description: "Schema and partition evolution in Apache Iceberg"
+---
+
+Iceberg supports **in-place table evolution** - you can evolve a table schema or change partition layout without costly data rewrites or table migrations. This is a fundamental advantage over traditional table formats.
+
+## Why Evolution Matters
+
+Traditional table formats make schema and partition changes expensive:
+
+<Warning>
+**Hive Example:** Changing from daily to hourly partitions requires:
+1. Creating a new table with the new partition scheme
+2. Rewriting all historical data to the new table  
+3. Updating all queries to use the new table name
+4. Managing the migration cutover period
+</Warning>
+
+Iceberg eliminates these costs through **metadata-only evolution** operations.
+
+## Schema Evolution
+
+Iceberg supports comprehensive schema changes as metadata operations:
+
+### Supported Operations
+
+<CardGroup cols={2}>
+  <Card title="Add" icon="plus">
+    Add new columns to the table or nested structs
+  </Card>
+  <Card title="Drop" icon="minus">
+    Remove existing columns from the table or nested structs
+  </Card>
+  <Card title="Rename" icon="pen">
+    Rename existing columns or fields in nested structs
+  </Card>
+  <Card title="Update" icon="arrow-up">
+    Widen column types using safe type promotions
+  </Card>
+  <Card title="Reorder" icon="arrows-up-down">
+    Change the order of columns or struct fields
+  </Card>
+  <Card title="Default Values" icon="star">
+    Set initial and write defaults for fields (v3+)
+  </Card>
+</CardGroup>
+
+### Adding Columns
+
+Add new columns anywhere in the schema:
+
+```java
+// Add a top-level column
+table.updateSchema()
+  .addColumn("email", Types.StringType.get())
+  .commit();
+
+// Add a nested column in a struct
+table.updateSchema()
+  .addColumn("customer.phone", Types.StringType.get())
+  .commit();
+
+// Add with default value (v3+)
+table.updateSchema()
+  .addColumn("status", Types.StringType.get())
+  .setDefault("status", "pending")
+  .commit();
+```
+
+When a column is added:
+- It gets a new, unique field ID
+- Existing data files don't contain the column
+- Reads return `null` (or the default value) for old files
+- New writes include the column
+
+### Dropping Columns
+
+Remove columns from the current schema:
+
+```java
+// Drop a column
+table.updateSchema()
+  .deleteColumn("deprecated_field")
+  .commit();
+
+// Drop a nested field
+table.updateSchema()
+  .deleteColumn("metadata.internal_id") 
+  .commit();
+```
+
+When a column is dropped:
+- It's removed from the current schema
+- The field ID is never reused
+- Old data files still contain the column (not rewritten)
+- Reads don't return the column
+- The column can be added back with a new field ID
+
+### Renaming Columns
+
+Change column names without affecting data:
+
+```java
+// Rename a column  
+table.updateSchema()
+  .renameColumn("customer_name", "full_name")
+  .commit();
+
+// Rename nested field
+table.updateSchema()
+  .renameColumn("address.zipcode", "address.postal_code")
+  .commit();
+```
+
+When a column is renamed:
+- The field ID stays the same
+- Data files are unchanged
+- Both old and new queries work immediately
+
+### Type Promotion
+
+Widen column types using safe promotions:
+
+```java
+// Promote int to long
+table.updateSchema()
+  .updateColumn("count", Types.LongType.get())
+  .commit();
+
+// Promote float to double  
+table.updateSchema()
+  .updateColumn("value", Types.DoubleType.get())
+  .commit();
+
+// Widen decimal precision
+table.updateSchema()
+  .updateColumn("price", Types.DecimalType.of(12, 2)) // was decimal(10,2)
+  .commit();
+```
+
+Valid type promotions:
+
+| From | To | Notes |
+|------|----|----- -|
+| int | long | Safe - no data loss |
+| float | double | Safe - no precision loss |
+| decimal(P,S) | decimal(P',S) | Only widen precision (P' > P) |
+| date | timestamp, timestamp_ns | v3+ only |
+
+<Note>
+Promotion from `timestamp` to `timestamptz` is **not allowed** as it changes semantic meaning.
+</Note>
+
+### Reordering Columns
+
+Change the column order in query results:
+
+```java
+// Move column to first position
+table.updateSchema()
+  .moveFirst("id")
+  .commit();
+
+// Move column after another  
+table.updateSchema()
+  .moveAfter("email", "name")
+  .commit();
+
+// Move column before another
+table.updateSchema()
+  .moveBefore("created_at", "updated_at")
+  .commit();
+```
+
+Column order changes:
+- Affect the order in SELECT * queries
+- Don't require data file rewrites
+- Don't affect column identification (still by field ID)
+
+### Using Spark SQL
+
+```sql
+-- Add column
+ALTER TABLE db.table ADD COLUMN email string;
+
+-- Add column with comment
+ALTER TABLE db.table ADD COLUMN phone string COMMENT 'Contact phone';
+
+-- Drop column  
+ALTER TABLE db.table DROP COLUMN deprecated_field;
+
+-- Rename column
+ALTER TABLE db.table RENAME COLUMN old_name TO new_name;
+
+-- Change column type (promotion only)
+ALTER TABLE db.table ALTER COLUMN count TYPE bigint;
+
+-- Reorder columns
+ALTER TABLE db.table ALTER COLUMN email AFTER name;
+ALTER TABLE db.table ALTER COLUMN id FIRST;
+```
+
+## Correctness Guarantees
+
+Iceberg guarantees that schema evolution changes are **independent and free of side-effects**:
+
+<AccordionGroup>
+  <Accordion title="1. Added columns never read from other columns">
+    Each column has a unique field ID. Adding `column_b` will never accidentally read data that was written as `column_a`.
+    
+    **Why this matters:** Formats that track columns by name can reuse a deleted column's name, causing data corruption.
+  </Accordion>
+
+  <Accordion title="2. Dropping a column doesn't affect other columns">
+    Removing `column_a` doesn't change the values in `column_b` or any other column.
+    
+    **Why this matters:** Formats that track columns by position must shift all subsequent columns when one is deleted.
+  </Accordion>
+
+  <Accordion title="3. Updates don't affect other columns">
+    Promoting `count` from int to long doesn't change values in any other column.
+    
+    **Why this matters:** Column updates are isolated and predictable.
+  </Accordion>
+
+  <Accordion title="4. Reordering doesn't change values">
+    Moving `email` before `name` doesn't change which data belongs to which column.
+    
+    **Why this matters:** Field IDs, not positions, identify columns.
+  </Accordion>
+</AccordionGroup>
+
+These guarantees are possible because **Iceberg uses unique field IDs** to track columns, not names or positions.
+
+## Partition Evolution
+
+Iceberg allows changing partition layout without rewriting data:
+
+```java
+// Update partition spec
+table.updateSpec()
+  .addField(bucket("id", 8))      // Add bucketing on id
+  .removeField("category")         // Remove category partition
+  .commit();
+```
+
+### How It Works
+
+When you evolve a partition spec:
+
+1. **Old data keeps its partition layout** - Files written with the old spec are unchanged
+2. **New data uses the new layout** - New writes use the updated partition spec  
+3. **Metadata tracks both** - Each partition spec has a unique ID
+4. **Split planning** - Queries plan old and new layouts separately
+
+<Frame>
+```
+Before Evolution:                After Evolution:
+
+Partition Spec v1:               Partition Spec v1:
+  months(timestamp)                months(timestamp)
+                                   ↓
+  2008-01/ (unchanged)             2008-01/ (unchanged)
+  2008-02/ (unchanged)             2008-02/ (unchanged)
+  ...
+  2008-12/ (unchanged)             2008-12/ (unchanged)
+                                   
+                                 Partition Spec v2:  
+                                   days(timestamp)
+                                   ↓
+                                   2009-01-01/ (new)
+                                   2009-01-02/ (new)
+                                   ...
+```
+</Frame>
+
+### Partition Evolution Example
+
+A logs table starts with monthly partitions, then switches to daily:
+
+```sql
+-- Create table with monthly partitions  
+CREATE TABLE logs (
+  level string,
+  message string,
+  ts timestamp
+) USING iceberg
+PARTITIONED BY (months(ts));
+
+-- Write data for 2023 (monthly partitions)
+INSERT INTO logs VALUES ...;
+
+-- Evolve to daily partitions for 2024 data
+ALTER TABLE logs 
+ADD PARTITION FIELD days(ts);
+
+ALTER TABLE logs  
+DROP PARTITION FIELD month_ts;
+
+-- New data uses daily partitions
+INSERT INTO logs VALUES ...;
+
+-- Queries work across both layouts!
+SELECT * FROM logs
+WHERE ts BETWEEN '2023-12-15' AND '2024-01-15';
+-- Prunes monthly partitions for 2023, daily partitions for 2024
+```
+
+### Why Partition Evolution Works
+
+Iceberg's **hidden partitioning** makes evolution possible:
+
+- Queries filter on source columns (`ts`), not partition values
+- Iceberg derives appropriate partition filters for each spec
+- Users don't need to know about partition layout changes
+- Old and new data coexist seamlessly
+
+### Using Spark SQL
+
+```sql
+-- Add a partition field
+ALTER TABLE db.table 
+ADD PARTITION FIELD bucket(16, user_id);
+
+-- Add with custom name
+ALTER TABLE db.table
+ADD PARTITION FIELD bucket(8, id) AS id_bucket;
+
+-- Remove a partition field (by name)
+ALTER TABLE db.table  
+DROP PARTITION FIELD category;
+
+-- Replace partition spec (drops all existing fields)
+ALTER TABLE db.table
+REPLACE PARTITION FIELD days(ts) WITH hours(ts);
+```
+
+### Using Java API
+
+```java
+// Add partition fields
+table.updateSpec()
+  .addField(bucket("user_id", 16))
+  .addField("user_bucket", bucket("user_id", 16)) // with custom name
+  .commit();
+
+// Remove partition field by name  
+table.updateSpec()
+  .removeField("category")
+  .commit();
+
+// Remove by transform
+table.updateSpec()
+  .removeField(bucket("id", 8))
+  .commit();
+```
+
+## Sort Order Evolution
+
+Iceberg also supports evolving the sort order:
+
+```java
+// Replace sort order
+table.replaceSortOrder()
+  .asc("id", NullOrder.NULLS_LAST)
+  .desc("category", NullOrder.NULLS_FIRST)  
+  .commit();
+```
+
+When sort order changes:
+- Old data keeps its original sort order
+- New data is written with the new sort order  
+- Engines can choose whether to sort (or write unsorted if expensive)
+
+```sql
+-- Using Spark SQL
+ALTER TABLE db.table 
+WRITE ORDERED BY id, category DESC NULLS FIRST;
+```
+
+## Evolution Best Practices
+
+<AccordionGroup>
+  <Accordion title="Test Schema Changes on Copies First">
+    Create a table branch or copy to test evolution operations before applying to production.
+    
+    ```java
+    table.manageSnapshots()
+      .createBranch("test-schema", currentSnapshotId)
+      .commit();
+    ```
+  </Accordion>
+
+  <Accordion title="Don't Reuse Deleted Column Names">
+    While technically allowed (with new field ID), reusing names can confuse users and queries.
+    
+    Better to use a new name: `customer_email_v2` instead of reusing `customer_email`.
+  </Accordion>
+
+  <Accordion title="Plan Partition Changes Based on Data Growth">
+    Monitor partition file sizes:
+    - Too large (> 1GB) → Consider finer granularity (daily → hourly)
+    - Too small (< 100MB) → Consider coarser granularity (hourly → daily)
+  </Accordion>
+
+  <Accordion title="Use Default Values for Required Fields">
+    When adding required fields in v3, always set a default value:
+    
+    ```java
+    table.updateSchema()
+      .addRequiredColumn("version", Types.IntegerType.get())
+      .setDefault("version", 1)
+      .commit();
+    ```
+  </Accordion>
+
+  <Accordion title="Document Major Schema Changes">
+    Use table properties to track significant schema evolution:
+    
+    ```java
+    table.updateProperties()
+      .set("schema.change.2024-03-01", "Added user_id field for tracking")
+      .commit();
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Limitations and Constraints
+
+<Warning>
+**Type Promotion Restrictions:**
+- Cannot promote if a partition field uses the source column with an incompatible transform
+- Example: Cannot promote `date` to `timestamp` if `bucket(date)` is a partition field (hash would change)
+</Warning>
+
+<Warning>
+**Struct Evolution Restrictions:**  
+- Cannot convert a primitive to a struct or vice versa
+- Cannot move fields in/out of nested structs
+- Cannot change struct field IDs
+</Warning>
+
+<Warning>
+**Map Key Evolution:**
+- Cannot add or drop struct fields in map keys (would change equality semantics)
+</Warning>
+
+## Migration Scenarios
+
+### Migrating from Hive
+
+Evolve Hive partition columns into hidden partitions:
+
+```sql
+-- Hive table with explicit partition column
+-- event_date is both a partition and a column
+
+-- After migration to Iceberg:  
+ALTER TABLE events DROP COLUMN event_date;  -- Remove partition column
+-- Partition values now derived from event_time
+-- Queries on event_time automatically filter partitions
+```
+
+### Changing Partition Granularity
+
+Gracefully transition from coarse to fine granularity:
+
+```sql
+-- Start: Monthly partitions (2023 data)
+-- Evolve: Add daily partitions
+ALTER TABLE metrics ADD PARTITION FIELD days(ts);
+ALTER TABLE metrics DROP PARTITION FIELD month_ts;
+
+-- 2023 data: Monthly partitions (large files, coarse pruning)
+-- 2024+ data: Daily partitions (right-sized files, fine pruning)  
+-- Queries work seamlessly across both!
+```
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Schemas" icon="table" href="/concepts/schemas">
+    Understand Iceberg's schema structure and field IDs
+  </Card>
+  <Card title="Partitioning" icon="layer-group" href="/concepts/partitioning">
+    Learn about partition transforms and hidden partitioning
+  </Card>
+  <Card title="Branching" icon="code-branch" href="/concepts/branching">
+    Use branches to test schema changes safely
+  </Card>
+</CardGroup>

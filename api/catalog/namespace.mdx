@@ -1,0 +1,219 @@
+---
+title: Namespace
+description: Namespace representation in Apache Iceberg catalogs
+---
+
+A `Namespace` represents a hierarchical namespace in an Iceberg catalog, similar to a database or schema in traditional database systems.
+
+## Overview
+
+Namespaces provide a way to organize tables hierarchically. A namespace can have multiple levels, such as `warehouse.department.team`.
+
+## Class
+
+```java
+public class Namespace
+```
+
+## Creating Namespaces
+
+### of()
+
+Creates a namespace from the given levels.
+
+```java
+public static Namespace of(String... levels)
+```
+
+**Parameters:**
+- `levels` - The namespace levels
+
+**Returns:** A new Namespace instance
+
+**Example:**
+```java
+// Single level namespace
+Namespace db = Namespace.of("my_database");
+
+// Multi-level namespace
+Namespace nested = Namespace.of("warehouse", "analytics", "production");
+```
+
+### empty()
+
+Returns an empty namespace.
+
+```java
+public static Namespace empty()
+```
+
+**Returns:** An empty namespace instance
+
+**Example:**
+```java
+Namespace empty = Namespace.empty();
+```
+
+## Instance Methods
+
+### levels()
+
+Returns the array of levels in this namespace.
+
+```java
+public String[] levels()
+```
+
+**Returns:** Array of namespace levels
+
+**Example:**
+```java
+Namespace ns = Namespace.of("warehouse", "sales");
+String[] levels = ns.levels(); // ["warehouse", "sales"]
+```
+
+### level()
+
+Returns the level at the specified position.
+
+```java
+public String level(int pos)
+```
+
+**Parameters:**
+- `pos` - The position of the level (0-based)
+
+**Returns:** The level at the specified position
+
+**Example:**
+```java
+Namespace ns = Namespace.of("warehouse", "sales");
+String first = ns.level(0);  // "warehouse"
+String second = ns.level(1); // "sales"
+```
+
+### isEmpty()
+
+Checks if this namespace is empty.
+
+```java
+public boolean isEmpty()
+```
+
+**Returns:** true if the namespace has no levels, false otherwise
+
+**Example:**
+```java
+Namespace empty = Namespace.empty();
+boolean isEmpty = empty.isEmpty(); // true
+
+Namespace ns = Namespace.of("db");
+boolean isDbEmpty = ns.isEmpty(); // false
+```
+
+### length()
+
+Returns the number of levels in this namespace.
+
+```java
+public int length()
+```
+
+**Returns:** The number of levels
+
+**Example:**
+```java
+Namespace ns = Namespace.of("warehouse", "sales", "2024");
+int len = ns.length(); // 3
+```
+
+### toString()
+
+Returns a string representation of the namespace with levels separated by dots.
+
+```java
+@Override
+public String toString()
+```
+
+**Returns:** String representation of the namespace
+
+**Example:**
+```java
+Namespace ns = Namespace.of("warehouse", "sales");
+String str = ns.toString(); // "warehouse.sales"
+```
+
+## Examples
+
+### Creating and Using Namespaces
+
+```java
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.Catalog;
+
+// Create a simple namespace
+Namespace db = Namespace.of("analytics");
+
+// Create a multi-level namespace
+Namespace nestedNs = Namespace.of("data_warehouse", "sales", "quarterly");
+
+// Use with catalog
+Catalog catalog = ...;
+List<TableIdentifier> tables = catalog.listTables(db);
+
+// Check namespace properties
+if (!db.isEmpty()) {
+    System.out.println("Namespace: " + db.toString());
+    System.out.println("Levels: " + db.length());
+}
+```
+
+### Iterating Through Namespace Levels
+
+```java
+Namespace ns = Namespace.of("warehouse", "department", "team");
+
+for (int i = 0; i < ns.length(); i++) {
+    System.out.println("Level " + i + ": " + ns.level(i));
+}
+// Output:
+// Level 0: warehouse
+// Level 1: department
+// Level 2: team
+```
+
+### Working with Empty Namespaces
+
+```java
+Namespace empty = Namespace.empty();
+
+if (empty.isEmpty()) {
+    System.out.println("This is an empty namespace");
+}
+
+// Empty namespace has no levels
+assert empty.length() == 0;
+assert empty.toString().equals("");
+```
+
+## Validation
+
+Namespaces enforce the following constraints:
+
+- Cannot be created from a null array
+- Individual levels cannot be null
+- Levels cannot contain the null-byte character (\u0000)
+
+```java
+// These will throw exceptions:
+
+// Namespace.of(null); // IllegalArgumentException
+// Namespace.of("db", null, "table"); // IllegalArgumentException
+```
+
+## See Also
+
+- [Catalog](/api/catalog/catalog) - Catalog API for namespace and table operations
+- [TableIdentifier](/api/catalog/table-identifier) - Table identification with namespaces
+- [SupportsNamespaces](/api/catalog/supports-namespaces) - Catalog extension for namespace operations

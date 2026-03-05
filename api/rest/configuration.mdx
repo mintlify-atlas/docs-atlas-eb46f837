@@ -1,0 +1,333 @@
+---
+title: REST Catalog Configuration
+description: Configuration endpoint for REST Catalog API discovery and setup
+---
+
+# Configuration API
+
+The configuration endpoint allows clients to discover server capabilities and receive catalog configuration.
+
+## Get Catalog Configuration
+
+Retrieve catalog configuration settings from the server.
+
+```http
+GET /v1/config
+```
+
+### Query Parameters
+
+<ParamField query="warehouse" type="string" optional>
+  Warehouse location or identifier to request from the service.
+</ParamField>
+
+### Request Example
+
+```bash
+curl -X GET "https://catalog.example.com/v1/config?warehouse=prod" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Response
+
+<ResponseField name="defaults" type="object">
+  Properties that should be used as default configuration. Applied before client configuration.
+  
+  <Expandable title="properties">
+    <ResponseField name="[key]" type="string">
+      Configuration property value
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="overrides" type="object">
+  Properties that should be used to override client configuration. Applied after defaults and client configuration.
+  
+  <Expandable title="properties">
+    <ResponseField name="[key]" type="string">
+      Configuration property value
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="endpoints" type="array" optional>
+  List of endpoints supported by the server. Each endpoint is formatted as `<HTTP verb> <resource path>`.
+  
+  If not provided, a default set of endpoints is assumed.
+</ResponseField>
+
+<ResponseField name="idempotency-key-lifetime" type="string (duration)" optional>
+  Client reuse window for an Idempotency-Key (ISO-8601 duration, e.g., `PT30M`, `PT24H`).
+  
+  Indicates how long clients may reuse an idempotency key. Presence indicates server supports idempotency.
+</ResponseField>
+
+### Response Example
+
+```json
+{
+  "overrides": {
+    "warehouse": "s3://bucket/warehouse/"
+  },
+  "defaults": {
+    "clients": "4"
+  },
+  "idempotency-key-lifetime": "PT30M",
+  "endpoints": [
+    "GET /v1/{prefix}/namespaces/{namespace}",
+    "GET /v1/{prefix}/namespaces",
+    "POST /v1/{prefix}/namespaces",
+    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "GET /v1/{prefix}/namespaces/{namespace}/views/{view}"
+  ]
+}
+```
+
+### Status Codes
+
+- `200 OK` - Configuration retrieved successfully
+- `400 Bad Request` - Invalid request parameters
+- `401 Unauthorized` - Authentication required
+- `403 Forbidden` - Not authorized to access configuration
+- `419 Authentication Timeout` - Authentication expired
+- `503 Service Unavailable` - Service temporarily unavailable
+
+## Configuration Properties
+
+### How Configuration is Applied
+
+Catalog configuration is constructed in this order:
+
+1. **Defaults** from server response
+2. **Client configuration** provided by the application
+3. **Overrides** from server response
+
+This allows servers to:
+- Suggest default values that clients can override
+- Enforce specific values that cannot be changed by clients
+
+### Common Configuration Properties
+
+#### Warehouse Location
+
+The root location for table data:
+
+```json
+{
+  "overrides": {
+    "warehouse": "s3://my-bucket/warehouse/"
+  }
+}
+```
+
+#### Client Pool Size
+
+Number of HTTP client connections:
+
+```json
+{
+  "defaults": {
+    "clients": "4"
+  }
+}
+```
+
+#### Namespace Separator
+
+Character used to separate namespace levels (default: `0x1F`):
+
+```json
+{
+  "overrides": {
+    "namespace-separator": "."
+  }
+}
+```
+
+#### OAuth2 Configuration
+
+OAuth2 server URI for authentication:
+
+```json
+{
+  "overrides": {
+    "oauth2-server-uri": "https://auth.example.com/oauth/token"
+  }
+}
+```
+
+### Additional Catalog Properties
+
+Servers may return any Iceberg catalog configuration property:
+
+- `io-impl` - FileIO implementation class
+- `lock-impl` - Lock implementation class
+- `cache-enabled` - Enable metadata caching
+- `cache.expiration-interval-ms` - Cache expiration time
+
+See [Catalog Properties](/configuration/catalog-properties) for a full list.
+
+## Endpoint Discovery
+
+The `endpoints` array advertises which API operations the server supports.
+
+### Default Endpoints
+
+If `endpoints` is not provided, clients should assume support for:
+
+- `GET /v1/{prefix}/namespaces`
+- `POST /v1/{prefix}/namespaces`
+- `GET /v1/{prefix}/namespaces/{namespace}`
+- `DELETE /v1/{prefix}/namespaces/{namespace}`
+- `POST /v1/{prefix}/namespaces/{namespace}/properties`
+- `GET /v1/{prefix}/namespaces/{namespace}/tables`
+- `POST /v1/{prefix}/namespaces/{namespace}/tables`
+- `GET /v1/{prefix}/namespaces/{namespace}/tables/{table}`
+- `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}`
+- `DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}`
+- `POST /v1/{prefix}/namespaces/{namespace}/register`
+- `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}/metrics`
+- `POST /v1/{prefix}/tables/rename`
+- `POST /v1/{prefix}/transactions/commit`
+
+### Checking Endpoint Support
+
+Before calling an endpoint, check if it's in the advertised list:
+
+```java
+boolean supportsViews = config.endpoints().contains(
+  "GET /v1/{prefix}/namespaces/{namespace}/views/{view}"
+);
+
+if (supportsViews) {
+  // Safe to call view endpoints
+}
+```
+
+## Idempotency Support
+
+The `idempotency-key-lifetime` field indicates:
+
+1. **If present**: Server supports idempotency keys
+2. **Value**: How long clients can reuse the same key
+
+### Using Idempotency Keys
+
+```http
+POST /v1/production/namespaces HTTP/1.1
+Host: catalog.example.com
+Authorization: Bearer <token>
+Idempotency-Key: 017F22E2-79B0-7CC3-98C4-DC0C0C07398F
+Content-Type: application/json
+
+{
+  "namespace": ["accounting", "tax"],
+  "properties": {
+    "owner": "finance-team"
+  }
+}
+```
+
+### Key Requirements
+
+- Format: UUIDv7 (RFC 9562)
+- Must be globally unique
+- Reuse same key when retrying the same operation
+- Generate new key for different operations
+- Don't reuse after lifetime expires
+
+## Client Implementation
+
+### Initialization Flow
+
+```java
+public class RestCatalog {
+  public void initialize(String uri, Map<String, String> properties) {
+    // 1. Call /config endpoint
+    ConfigResponse config = client.get(uri + "/v1/config");
+    
+    // 2. Apply configuration in order
+    Map<String, String> finalConfig = new HashMap<>();
+    finalConfig.putAll(config.defaults());
+    finalConfig.putAll(properties);
+    finalConfig.putAll(config.overrides());
+    
+    // 3. Store supported endpoints
+    this.supportedEndpoints = new HashSet<>(config.endpoints());
+    
+    // 4. Store idempotency support
+    this.supportsIdempotency = config.idempotencyKeyLifetime() != null;
+    this.idempotencyLifetime = Duration.parse(
+      config.idempotencyKeyLifetime()
+    );
+  }
+}
+```
+
+### Configuration Caching
+
+Cache configuration to avoid repeated calls:
+
+```java
+private static final Duration CONFIG_CACHE_TTL = Duration.ofHours(1);
+
+private ConfigResponse getCachedConfig() {
+  if (cachedConfig == null || cacheExpired()) {
+    cachedConfig = fetchConfig();
+    cacheTime = Instant.now();
+  }
+  return cachedConfig;
+}
+```
+
+## Use Cases
+
+### Multi-Warehouse Setup
+
+```http
+# Development warehouse
+GET /v1/config?warehouse=dev
+
+# Production warehouse  
+GET /v1/config?warehouse=prod
+```
+
+Server returns different configurations:
+
+```json
+{
+  "overrides": {
+    "warehouse": "s3://dev-bucket/warehouse/"
+  }
+}
+```
+
+### Custom Client Configuration
+
+Client can set custom properties, but server overrides take precedence:
+
+```java
+Map<String, String> clientProps = Map.of(
+  "warehouse", "s3://my-bucket/",  // Will be overridden
+  "clients", "8"                    // Will be used (not in overrides)
+);
+
+// Final config:
+// warehouse: s3://server-bucket/ (from override)
+// clients: 8 (from client)
+```
+
+## Best Practices
+
+1. **Call /config first**: Always retrieve configuration before other operations
+2. **Respect overrides**: Don't try to override server-enforced settings
+3. **Cache configuration**: Avoid repeated calls with appropriate TTL
+4. **Check endpoint support**: Gracefully handle unsupported operations
+5. **Use warehouse parameter**: For multi-tenant deployments
+6. **Handle configuration changes**: Re-fetch if errors suggest configuration issues
+
+## Related
+
+- [Catalog Properties](/configuration/catalog-properties) - Complete property reference
+- [OAuth2 Authentication](/security/oauth2) - Authentication configuration
+- [REST API Overview](/api/rest/overview) - API overview

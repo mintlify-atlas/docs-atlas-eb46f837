@@ -1,0 +1,483 @@
+---
+title: 'Spark DDL Operations'
+description: 'Data Definition Language commands for Iceberg tables in Spark'
+---
+
+## Overview
+
+Iceberg uses Apache Spark's DataSourceV2 API for catalog implementations. To use Iceberg DDL commands, first configure [Spark catalogs](/engines/spark/configuration).
+
+## CREATE TABLE
+
+Spark 3+ can create tables in any Iceberg catalog using the `USING iceberg` clause:
+
+```sql
+CREATE TABLE prod.db.sample (
+    id bigint NOT NULL COMMENT 'unique id',
+    data string
+) USING iceberg;
+```
+
+### Table Options
+
+Table create commands support the full range of Spark create clauses:
+
+- `PARTITIONED BY (partition-expressions)` - Configure partitioning
+- `LOCATION '(fully-qualified-uri)'` - Set table location
+- `COMMENT 'table documentation'` - Add table description
+- `TBLPROPERTIES ('key'='value', ...)` - Set table configuration
+
+<Note>
+`CREATE TABLE ... LIKE ...` syntax is **not supported**.
+</Note>
+
+### Partitioned Tables
+
+Create partitioned tables using `PARTITIONED BY`:
+
+<CodeGroup>
+```sql Identity Partition
+CREATE TABLE prod.db.sample (
+    id bigint,
+    data string,
+    category string
+) USING iceberg
+PARTITIONED BY (category);
+```
+
+```sql Hidden Partitions
+CREATE TABLE prod.db.sample (
+    id bigint,
+    data string,
+    category string,
+    ts timestamp
+) USING iceberg
+PARTITIONED BY (
+    bucket(16, id),
+    days(ts),
+    category
+);
+```
+</CodeGroup>
+
+### Partition Transforms
+
+Iceberg supports the following partition transforms:
+
+| Transform | Description | Example |
+|-----------|-------------|----------|
+| `year(ts)` | Partition by year | `PARTITIONED BY (year(ts))` |
+| `month(ts)` | Partition by month | `PARTITIONED BY (month(ts))` |
+| `day(ts)` or `date(ts)` | Partition by date | `PARTITIONED BY (day(ts))` |
+| `hour(ts)` or `date_hour(ts)` | Partition by date and hour | `PARTITIONED BY (hour(ts))` |
+| `bucket(N, col)` | Hash bucket (mod N) | `PARTITIONED BY (bucket(16, id))` |
+| `truncate(L, col)` | Truncate to length L | `PARTITIONED BY (truncate(10, data))` |
+
+<Info>
+For strings, `truncate` limits to the given length. For integers and longs, it creates bins: `truncate(10, i)` produces partitions 0, 10, 20, 30, etc.
+</Info>
+
+## CREATE TABLE AS SELECT (CTAS)
+
+Create tables populated with query results:
+
+<CodeGroup>
+```sql Basic CTAS
+CREATE TABLE prod.db.sample
+USING iceberg
+AS SELECT id, data FROM source;
+```
+
+```sql CTAS with Options
+CREATE TABLE prod.db.sample
+USING iceberg
+PARTITIONED BY (category)
+TBLPROPERTIES ('key'='value')
+AS SELECT id, data, category FROM source;
+```
+</CodeGroup>
+
+<Warning>
+CTAS is atomic when using `SparkCatalog`, but **not atomic** when using `SparkSessionCatalog`.
+</Warning>
+
+## REPLACE TABLE AS SELECT (RTAS)
+
+Atomically replace table contents while preserving history:
+
+<CodeGroup>
+```sql Basic RTAS
+REPLACE TABLE prod.db.sample
+USING iceberg
+AS SELECT id, data FROM source;
+```
+
+```sql RTAS with Changes
+REPLACE TABLE prod.db.sample
+USING iceberg
+PARTITIONED BY (region)
+TBLPROPERTIES ('key'='new_value')
+AS SELECT id, data, region FROM source;
+```
+
+```sql CREATE OR REPLACE
+CREATE OR REPLACE TABLE prod.db.sample
+USING iceberg
+AS SELECT id, data FROM source;
+```
+</CodeGroup>
+
+<Info>
+The schema and partition spec will be replaced if changed. To avoid modifying the schema, use `INSERT OVERWRITE` instead.
+</Info>
+
+## DROP TABLE
+
+<Note>
+Drop behavior changed in Iceberg 0.14:
+- **Before 0.14**: `DROP TABLE` deleted table metadata and contents
+- **From 0.14**: `DROP TABLE` only removes from catalog; use `DROP TABLE PURGE` to delete contents
+</Note>
+
+### Remove from Catalog Only
+
+```sql
+DROP TABLE prod.db.sample;
+```
+
+### Remove from Catalog and Delete Contents
+
+```sql
+DROP TABLE prod.db.sample PURGE;
+```
+
+## ALTER TABLE
+
+Iceberg provides full `ALTER TABLE` support in Spark 3:
+
+- Rename tables
+- Set or remove table properties
+- Add, delete, and rename columns
+- Add, delete, and rename nested fields
+- Reorder columns
+- Widen numeric types
+- Change column nullability
+
+### Rename Table
+
+```sql
+ALTER TABLE prod.db.sample RENAME TO prod.db.new_name;
+```
+
+### Table Properties
+
+<CodeGroup>
+```sql Set Properties
+ALTER TABLE prod.db.sample SET TBLPROPERTIES (
+    'read.split.target-size'='268435456'
+);
+```
+
+```sql Unset Properties
+ALTER TABLE prod.db.sample 
+UNSET TBLPROPERTIES ('read.split.target-size');
+```
+
+```sql Set Comment
+ALTER TABLE prod.db.sample SET TBLPROPERTIES (
+    'comment' = 'A table comment.'
+);
+```
+</CodeGroup>
+
+### Add Columns
+
+<CodeGroup>
+```sql Simple Column
+ALTER TABLE prod.db.sample
+ADD COLUMNS (
+    new_column string COMMENT 'new column docs'
+);
+```
+
+```sql Nested Struct Field
+-- Create struct column
+ALTER TABLE prod.db.sample
+ADD COLUMN point struct<x: double, y: double>;
+
+-- Add field to struct
+ALTER TABLE prod.db.sample
+ADD COLUMN point.z double;
+```
+
+```sql Position Control
+ALTER TABLE prod.db.sample
+ADD COLUMN new_column bigint AFTER other_column;
+
+ALTER TABLE prod.db.sample
+ADD COLUMN nested.new_column bigint FIRST;
+```
+</CodeGroup>
+
+<Info>
+For arrays and maps, use `element` and `value` keywords to access nested columns:
+- `ADD COLUMN points.element.z double` - Add field to array element
+- `ADD COLUMN points.value.b int` - Add field to map value
+</Info>
+
+### Rename Columns
+
+```sql
+ALTER TABLE prod.db.sample RENAME COLUMN data TO payload;
+ALTER TABLE prod.db.sample RENAME COLUMN location.lat TO latitude;
+```
+
+<Note>
+Nested rename only affects the leaf field. Renaming `location.lat` to `latitude` results in `location.latitude`.
+</Note>
+
+### Alter Column Type and Properties
+
+Safe type widening is supported:
+
+<CodeGroup>
+```sql Widen Type
+ALTER TABLE prod.db.sample 
+ALTER COLUMN measurement TYPE double;
+```
+
+```sql Update Comment
+ALTER TABLE prod.db.sample 
+ALTER COLUMN measurement 
+COMMENT 'unit is kilobytes per second';
+```
+
+```sql Reorder Columns
+ALTER TABLE prod.db.sample 
+ALTER COLUMN col FIRST;
+
+ALTER TABLE prod.db.sample 
+ALTER COLUMN nested.col AFTER other_col;
+```
+
+```sql Change Nullability
+ALTER TABLE prod.db.sample 
+ALTER COLUMN id DROP NOT NULL;
+```
+</CodeGroup>
+
+**Safe type conversions:**
+- `int` → `bigint`
+- `float` → `double`
+- `decimal(P,S)` → `decimal(P2,S)` where P2 > P
+
+<Warning>
+- Cannot change nullable column to non-nullable with `SET NOT NULL`
+- Use `ADD COLUMN` and `DROP COLUMN` for struct type changes
+</Warning>
+
+### Drop Columns
+
+```sql
+ALTER TABLE prod.db.sample DROP COLUMN id;
+ALTER TABLE prod.db.sample DROP COLUMN point.z;
+```
+
+## SQL Extensions
+
+The following commands require [Iceberg SQL extensions](/engines/spark/configuration#sql-extensions).
+
+### Partition Evolution
+
+<CodeGroup>
+```sql Add Partition Field
+ALTER TABLE prod.db.sample 
+ADD PARTITION FIELD catalog;
+
+ALTER TABLE prod.db.sample 
+ADD PARTITION FIELD bucket(16, id);
+
+ALTER TABLE prod.db.sample 
+ADD PARTITION FIELD bucket(16, id) AS shard;
+```
+
+```sql Drop Partition Field
+ALTER TABLE prod.db.sample 
+DROP PARTITION FIELD catalog;
+
+ALTER TABLE prod.db.sample 
+DROP PARTITION FIELD bucket(16, id);
+```
+
+```sql Replace Partition Field
+ALTER TABLE prod.db.sample 
+REPLACE PARTITION FIELD ts_day 
+WITH day(ts) AS day_of_ts;
+```
+</CodeGroup>
+
+<Warning>
+**Dynamic partition overwrite behavior changes** when partitioning changes. For example, moving from daily to hourly partitions will cause overwrites to affect hourly partitions instead of daily ones.
+</Warning>
+
+### Write Ordering
+
+Configure automatic data sorting for writes:
+
+<CodeGroup>
+```sql Global Ordering
+ALTER TABLE prod.db.sample 
+WRITE ORDERED BY category, id;
+
+ALTER TABLE prod.db.sample 
+WRITE ORDERED BY category ASC NULLS LAST, id DESC;
+```
+
+```sql Local Ordering
+ALTER TABLE prod.db.sample 
+WRITE LOCALLY ORDERED BY category, id;
+```
+
+```sql Distribution Mode
+ALTER TABLE prod.db.sample 
+WRITE DISTRIBUTED BY PARTITION;
+
+ALTER TABLE prod.db.sample 
+WRITE DISTRIBUTED BY PARTITION 
+LOCALLY ORDERED BY category, id;
+```
+
+```sql Clear Ordering
+ALTER TABLE prod.db.sample 
+WRITE UNORDERED;
+```
+</CodeGroup>
+
+### Identifier Fields
+
+<CodeGroup>
+```sql Set Identifier Fields
+ALTER TABLE prod.db.sample 
+SET IDENTIFIER FIELDS id;
+
+ALTER TABLE prod.db.sample 
+SET IDENTIFIER FIELDS id, data;
+```
+
+```sql Drop Identifier Fields
+ALTER TABLE prod.db.sample 
+DROP IDENTIFIER FIELDS id;
+```
+</CodeGroup>
+
+<Note>
+Identifier fields must be `NOT NULL` columns. Setting identifier fields enables Flink upsert operations.
+</Note>
+
+### Branching and Tagging
+
+<CodeGroup>
+```sql Create Branch
+ALTER TABLE prod.db.sample 
+CREATE BRANCH `audit-branch`;
+
+ALTER TABLE prod.db.sample 
+CREATE BRANCH IF NOT EXISTS `audit-branch`;
+
+ALTER TABLE prod.db.sample 
+CREATE BRANCH `audit-branch` AS OF VERSION 1234
+RETAIN 30 DAYS 
+WITH SNAPSHOT RETENTION 3 SNAPSHOTS 2 DAYS;
+```
+
+```sql Create Tag
+ALTER TABLE prod.db.sample 
+CREATE TAG `historical-tag`;
+
+ALTER TABLE prod.db.sample 
+CREATE TAG `historical-tag` 
+AS OF VERSION 1234 
+RETAIN 365 DAYS;
+```
+
+```sql Drop Branch/Tag
+ALTER TABLE prod.db.sample DROP BRANCH `audit-branch`;
+ALTER TABLE prod.db.sample DROP TAG `historical-tag`;
+```
+</CodeGroup>
+
+## Iceberg Views
+
+<Note>
+Iceberg views require Spark 3.4+.
+</Note>
+
+### Create View
+
+<CodeGroup>
+```sql Simple View
+CREATE VIEW view_name 
+AS SELECT * FROM table_name;
+
+CREATE VIEW IF NOT EXISTS view_name 
+AS SELECT * FROM table_name;
+```
+
+```sql View with Schema
+CREATE VIEW view_name (
+    ID COMMENT 'Unique ID',
+    ZIP COMMENT 'Zipcode'
+) COMMENT 'View Comment'
+AS SELECT id, zip FROM table_name;
+```
+
+```sql View with Properties
+CREATE VIEW view_name
+    TBLPROPERTIES ('key1' = 'val1')
+AS SELECT * FROM table_name;
+```
+</CodeGroup>
+
+### Manage Views
+
+<CodeGroup>
+```sql Replace View
+CREATE OR REPLACE VIEW view_name
+AS SELECT id FROM table_name;
+```
+
+```sql Set Properties
+ALTER VIEW view_name 
+SET TBLPROPERTIES ('key1' = 'val1');
+
+ALTER VIEW view_name 
+UNSET TBLPROPERTIES ('key1');
+```
+
+```sql Drop View
+DROP VIEW view_name;
+DROP VIEW IF EXISTS view_name;
+```
+
+```sql Show Views
+SHOW VIEWS;
+SHOW VIEWS IN catalog.namespace;
+```
+</CodeGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Query Data" icon="search" href="/engines/spark/queries">
+    Learn about SELECT queries and time travel
+  </Card>
+  <Card title="Write Data" icon="pen" href="/engines/spark/writes">
+    Master INSERT, MERGE, and UPDATE operations
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/engines/spark/configuration">
+    Configure Spark catalogs and options
+  </Card>
+  <Card title="Procedures" icon="gears" href="/engines/spark/procedures">
+    Maintain tables with stored procedures
+  </Card>
+</CardGroup>

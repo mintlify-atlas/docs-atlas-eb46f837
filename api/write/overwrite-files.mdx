@@ -1,0 +1,452 @@
+---
+title: OverwriteFiles
+description: API for overwriting files in Apache Iceberg tables
+---
+
+The `OverwriteFiles` interface provides an API for replacing existing files in an Iceberg table with new files.
+
+## Overview
+
+OverwriteFiles accumulates file additions and deletions, producing a new snapshot that replaces deleted files with added files. This is used for:
+- Idempotent writes that replace partitions
+- Update/delete operations that eagerly overwrite files
+- Data compaction and optimization
+
+## Interface
+
+```java
+public interface OverwriteFiles extends SnapshotUpdate<OverwriteFiles>
+```
+
+## Core Methods
+
+### overwriteByRowFilter()
+
+Deletes files that match an expression on data rows.
+
+```java
+OverwriteFiles overwriteByRowFilter(Expression expr)
+```
+
+**Parameters:**
+- `expr` - An expression on rows in the table
+
+**Returns:** This for method chaining
+
+**Throws:** `ValidationException` if a file can contain both rows that match and rows that do not
+
+**Description:**
+A file is selected to be deleted if it could contain any rows that match the expression (using an inclusive projection). Files are deleted if all rows in the file must match the expression (using a strict projection).
+
+**Example:**
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+// Overwrite all data for a specific date
+table.newOverwrite()
+    .overwriteByRowFilter(Expressions.equal("date", "2024-01-15"))
+    .addFile(newDataFile)
+    .commit();
+```
+
+### addFile()
+
+Adds a data file to the table.
+
+```java
+OverwriteFiles addFile(DataFile file)
+```
+
+**Parameters:**
+- `file` - A data file to add
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DataFile newFile = DataFiles.builder(spec)
+    .withPath("/data/new-file.parquet")
+    .withRecordCount(1000)
+    .build();
+
+table.newOverwrite()
+    .addFile(newFile)
+    .commit();
+```
+
+### deleteFile()
+
+Deletes a data file from the table.
+
+```java
+OverwriteFiles deleteFile(DataFile file)
+```
+
+**Parameters:**
+- `file` - A data file to delete
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DataFile oldFile = ...; // File to remove
+
+table.newOverwrite()
+    .deleteFile(oldFile)
+    .addFile(newFile)
+    .commit();
+```
+
+### deleteFiles()
+
+Deletes a set of data files along with their delete files.
+
+```java
+default OverwriteFiles deleteFiles(
+    DataFileSet dataFilesToDelete,
+    DeleteFileSet deleteFilesToDelete)
+```
+
+**Parameters:**
+- `dataFilesToDelete` - The data files to be deleted
+- `deleteFilesToDelete` - The delete files corresponding to the data files
+
+**Returns:** This for method chaining
+
+## Validation Methods
+
+### validateAddedFilesMatchOverwriteFilter()
+
+Validates that each added file matches the overwrite expression.
+
+```java
+OverwriteFiles validateAddedFilesMatchOverwriteFilter()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+Ensures writes are idempotent by validating that added files match the overwrite filter. This prevents adding files that wouldn't be removed if the operation ran again.
+
+**Example:**
+```java
+table.newOverwrite()
+    .overwriteByRowFilter(Expressions.equal("date", "2024-01-15"))
+    .addFile(newFile)
+    .validateAddedFilesMatchOverwriteFilter()
+    .commit();
+```
+
+### validateFromSnapshot()
+
+Sets the snapshot ID used in any reads for this operation.
+
+```java
+OverwriteFiles validateFromSnapshot(long snapshotId)
+```
+
+**Parameters:**
+- `snapshotId` - A snapshot ID
+
+**Returns:** This for method chaining
+
+**Description:**
+Validations will check changes after this snapshot ID. If not set, all ancestor snapshots through the table's initial snapshot are validated.
+
+### conflictDetectionFilter()
+
+Sets a conflict detection filter for validating concurrent changes.
+
+```java
+OverwriteFiles conflictDetectionFilter(Expression conflictDetectionFilter)
+```
+
+**Parameters:**
+- `conflictDetectionFilter` - An expression on rows in the table
+
+**Returns:** This for method chaining
+
+### validateNoConflictingData()
+
+Enables validation that concurrently added data does not conflict.
+
+```java
+OverwriteFiles validateNoConflictingData()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+Required for non-idempotent overwrite operations. Validates that no new files matching the conflict detection filter have been added concurrently.
+
+**Example:**
+```java
+table.newOverwrite()
+    .conflictDetectionFilter(Expressions.equal("date", "2024-01-15"))
+    .validateNoConflictingData()
+    .deleteFile(oldFile)
+    .addFile(newFile)
+    .commit();
+```
+
+### validateNoConflictingDeletes()
+
+Enables validation that concurrent deletes do not conflict.
+
+```java
+OverwriteFiles validateNoConflictingDeletes()
+```
+
+**Returns:** This for method chaining
+
+**Description:**
+Required for non-idempotent overwrite operations. Validates that no concurrent deletes affect the files being overwritten.
+
+### caseSensitive()
+
+Enables or disables case sensitive expression binding.
+
+```java
+OverwriteFiles caseSensitive(boolean caseSensitive)
+```
+
+**Parameters:**
+- `caseSensitive` - Whether expression binding should be case sensitive
+
+**Returns:** This for method chaining
+
+## Examples
+
+### Partition Overwrite (Idempotent)
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.OverwriteFiles;
+import org.apache.iceberg.expressions.Expressions;
+
+// Replace all data for a specific partition
+String targetDate = "2024-01-15";
+
+DataFile newFile = createDataFile("/data/date=2024-01-15/new.parquet");
+
+table.newOverwrite()
+    .overwriteByRowFilter(Expressions.equal("date", targetDate))
+    .addFile(newFile)
+    .validateAddedFilesMatchOverwriteFilter()
+    .commit();
+
+System.out.println("Partition overwrite complete");
+```
+
+### File-Level Overwrite
+
+```java
+// Replace specific files
+List<DataFile> oldFiles = findFilesToReplace();
+List<DataFile> newFiles = createReplacementFiles();
+
+OverwriteFiles overwrite = table.newOverwrite();
+
+// Delete old files
+for (DataFile oldFile : oldFiles) {
+    overwrite.deleteFile(oldFile);
+}
+
+// Add new files
+for (DataFile newFile : newFiles) {
+    overwrite.addFile(newFile);
+}
+
+overwrite.commit();
+```
+
+### Compaction with Overwrite
+
+```java
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.io.CloseableIterable;
+
+// Compact small files in a partition
+Expression partitionFilter = Expressions.equal("date", "2024-01-15");
+
+// Find files to compact
+List<DataFile> filesToCompact = new ArrayList<>();
+TableScan scan = table.newScan().filter(partitionFilter);
+
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+    for (FileScanTask task : tasks) {
+        if (task.file().fileSizeInBytes() < SMALL_FILE_THRESHOLD) {
+            filesToCompact.add(task.file());
+        }
+    }
+}
+
+// Compact files
+DataFile compactedFile = compactFiles(filesToCompact);
+
+// Overwrite
+OverwriteFiles overwrite = table.newOverwrite();
+for (DataFile file : filesToCompact) {
+    overwrite.deleteFile(file);
+}
+overwrite.addFile(compactedFile).commit();
+
+System.out.println("Compacted " + filesToCompact.size() + 
+    " files into 1 file");
+```
+
+### Dynamic Overwrite
+
+```java
+// Overwrite partitions dynamically based on new data
+Set<String> affectedPartitions = new HashSet<>();
+
+for (DataFile newFile : newFiles) {
+    String partition = extractPartition(newFile);
+    affectedPartitions.add(partition);
+}
+
+// Build overwrite expression
+Expression filter = null;
+for (String partition : affectedPartitions) {
+    Expression partExpr = Expressions.equal("date", partition);
+    filter = (filter == null) ? partExpr : Expressions.or(filter, partExpr);
+}
+
+// Overwrite affected partitions
+OverwriteFiles overwrite = table.newOverwrite()
+    .overwriteByRowFilter(filter);
+
+for (DataFile newFile : newFiles) {
+    overwrite.addFile(newFile);
+}
+
+overwrite.validateAddedFilesMatchOverwriteFilter()
+         .commit();
+```
+
+### Non-Idempotent Update with Validation
+
+```java
+// Update operation that must validate concurrent changes
+long readSnapshotId = table.currentSnapshot().snapshotId();
+
+// Read and filter data
+List<DataFile> filesToUpdate = identifyFilesToUpdate();
+List<DataFile> updatedFiles = rewriteFiles(filesToUpdate);
+
+// Perform overwrite with validation
+Expression conflictFilter = Expressions.equal("category", "electronics");
+
+OverwriteFiles overwrite = table.newOverwrite()
+    .validateFromSnapshot(readSnapshotId)
+    .conflictDetectionFilter(conflictFilter)
+    .validateNoConflictingData()
+    .validateNoConflictingDeletes();
+
+for (DataFile oldFile : filesToUpdate) {
+    overwrite.deleteFile(oldFile);
+}
+
+for (DataFile newFile : updatedFiles) {
+    overwrite.addFile(newFile);
+}
+
+try {
+    overwrite.commit();
+} catch (ValidationException e) {
+    System.err.println("Concurrent modification detected: " + e.getMessage());
+    // Retry or handle conflict
+}
+```
+
+### Multi-Partition Overwrite
+
+```java
+// Overwrite multiple partitions atomically
+List<String> dates = Arrays.asList("2024-01-15", "2024-01-16", "2024-01-17");
+
+// Build filter for all dates
+Expression filter = null;
+for (String date : dates) {
+    Expression dateExpr = Expressions.equal("date", date);
+    filter = (filter == null) ? dateExpr : Expressions.or(filter, dateExpr);
+}
+
+// Create new files for each partition
+List<DataFile> newFiles = new ArrayList<>();
+for (String date : dates) {
+    DataFile file = createFileForDate(date);
+    newFiles.add(file);
+}
+
+// Atomic overwrite
+OverwriteFiles overwrite = table.newOverwrite()
+    .overwriteByRowFilter(filter);
+
+for (DataFile file : newFiles) {
+    overwrite.addFile(file);
+}
+
+overwrite.validateAddedFilesMatchOverwriteFilter()
+         .commit();
+```
+
+### Overwrite with Delete Files
+
+```java
+import org.apache.iceberg.util.DataFileSet;
+import org.apache.iceberg.util.DeleteFileSet;
+
+// Overwrite data files and associated delete files
+DataFileSet dataFiles = DataFileSet.create();
+DeleteFileSet deleteFiles = DeleteFileSet.create();
+
+// Collect files to remove
+for (FileScanTask task : tasks) {
+    dataFiles.add(task.file());
+    deleteFiles.addAll(task.deletes());
+}
+
+// Perform overwrite
+table.newOverwrite()
+    .deleteFiles(dataFiles, deleteFiles)
+    .addFile(compactedFile)
+    .commit();
+```
+
+## Validation Modes
+
+### Idempotent Overwrite
+
+For operations that can safely be retried:
+
+```java
+table.newOverwrite()
+    .overwriteByRowFilter(filter)
+    .addFile(newFile)
+    .validateAddedFilesMatchOverwriteFilter()  // Ensures idempotency
+    .commit();
+```
+
+### Non-Idempotent Overwrite
+
+For operations that must check for conflicts:
+
+```java
+table.newOverwrite()
+    .validateFromSnapshot(readSnapshot)
+    .conflictDetectionFilter(filter)
+    .validateNoConflictingData()
+    .validateNoConflictingDeletes()
+    .deleteFile(oldFile)
+    .addFile(newFile)
+    .commit();
+```
+
+## See Also
+
+- [AppendFiles](/api/write/append-files) - Append files to a table
+- [DeleteFiles](/api/write/delete-files) - Delete files from a table
+- [RowDelta](/api/write/row-delta) - Row-level changes
+- [Expressions](/api/expressions) - Filter expressions

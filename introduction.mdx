@@ -1,0 +1,263 @@
+---
+title: "Introduction to Apache Iceberg"
+description: "Learn about Apache Iceberg, an open table format for huge analytic datasets that brings reliability and simplicity to data lakes."
+---
+
+# Introduction to Apache Iceberg
+
+Apache Iceberg is an **open table format for huge analytic datasets**. Iceberg brings the reliability and simplicity of SQL tables to big data, while making it possible for engines like Spark, Trino, Flink, Presto, Hive, and Impala to safely work with the same tables, at the same time.
+
+## What is Iceberg?
+
+Iceberg is a high-performance format for huge analytic tables that works just like a SQL table. Instead of managing data files directly, Iceberg adds a layer of metadata that tracks all files in a table, enabling features that are difficult or impossible with traditional table formats.
+
+<Note>
+Iceberg is used in production where a single table can contain tens of petabytes of data, and even these huge tables can be read without a distributed SQL engine.
+</Note>
+
+## Why Iceberg?
+
+Traditional table formats like Hive tables suffer from several problems:
+
+- **No ACID guarantees**: Changes to tables are not atomic, leading to inconsistent reads
+- **Partition maintenance**: Users must manually manage partition columns and filters
+- **Schema evolution issues**: Changing schemas can accidentally corrupt data
+- **Slow planning**: Listing files in object stores takes O(n) operations with partition count
+- **No time travel**: Can't query historical data or rollback bad changes
+
+Iceberg solves all of these problems with a modern table format designed from the ground up for cloud object stores.
+
+## Key Features
+
+### ACID Transactions
+
+Iceberg provides serializable isolation for all table operations. All changes are atomic - readers never see partial or uncommitted changes, and writers use optimistic concurrency to safely handle conflicts.
+
+```java
+// All operations are atomic
+table.newAppend()
+    .appendFile(dataFile)
+    .commit();  // Either succeeds completely or fails
+```
+
+### Schema Evolution
+
+Add, drop, rename, update, or reorder columns without fear. Schema evolution in Iceberg:
+
+- Never requires rewriting data files
+- Has no side effects (won't inadvertently un-delete data)
+- Supports column renaming with full lineage tracking
+
+<CodeGroup>
+```java Java API
+table.updateSchema()
+    .addColumn("new_column", Types.StringType.get())
+    .renameColumn("old_name", "new_name")
+    .commit();
+```
+
+```sql SQL
+ALTER TABLE my_table 
+ADD COLUMN new_column string;
+
+ALTER TABLE my_table 
+RENAME COLUMN old_name TO new_name;
+```
+</CodeGroup>
+
+### Hidden Partitioning
+
+Partitioning in Iceberg is hidden from users. Unlike Hive, you don't need to:
+
+- Manually produce partition values when writing
+- Remember to add partition filters to queries
+- Worry about using the wrong format or column
+
+**Hive approach (error-prone):**
+```sql
+-- Must manually calculate partition value
+INSERT INTO logs PARTITION (event_date)
+  SELECT level, message, event_time, format_time(event_time, 'YYYY-MM-dd')
+  FROM source;
+
+-- Must remember partition filter or scan everything
+SELECT * FROM logs
+WHERE event_time > '2024-01-01'
+  AND event_date = '2024-01-01';  -- Easy to forget!
+```
+
+**Iceberg approach (automatic):**
+```sql
+-- Partition values calculated automatically
+INSERT INTO logs SELECT level, message, event_time FROM source;
+
+-- Partition pruning happens automatically
+SELECT * FROM logs WHERE event_time > '2024-01-01';
+```
+
+### Time Travel and Versioning
+
+Every write creates a new snapshot. Query historical data or rollback to previous versions:
+
+<CodeGroup>
+```sql SQL Time Travel
+-- Query table as of a timestamp
+SELECT * FROM my_table 
+TIMESTAMP AS OF '2024-01-01 10:00:00';
+
+-- Query table as of a snapshot ID
+SELECT * FROM my_table 
+VERSION AS OF 5678901234;
+
+-- View all snapshots
+SELECT * FROM my_table.snapshots;
+```
+
+```java Java API
+// Read from a specific snapshot
+TableScan scan = table.newScan()
+    .useSnapshot(snapshotId);
+
+// Read as of a timestamp
+TableScan scan = table.newScan()
+    .asOfTime(timestamp);
+```
+</CodeGroup>
+
+### Partition Evolution
+
+Change partitioning layout as data volume or query patterns change, without rewriting data:
+
+```java
+// Start with daily partitioning
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .day("event_time")
+    .build();
+
+// Later, evolve to hourly partitioning for new data
+table.updateSpec()
+    .removeField("event_time_day")
+    .addField(Expressions.hour("event_time"))
+    .commit();
+```
+
+## Table Format Architecture
+
+Iceberg uses a three-level metadata structure:
+
+<Steps>
+  <Step title="Metadata File">
+    The table metadata file is the entry point. It stores the table schema, partition spec, snapshots, and a pointer to the current snapshot. This file is updated atomically on every commit.
+  </Step>
+  
+  <Step title="Manifest List">
+    Each snapshot has a manifest list that tracks all manifest files. The manifest list stores partition value ranges for each manifest, enabling metadata filtering during scan planning.
+  </Step>
+  
+  <Step title="Manifest Files">
+    Manifest files track data files and their statistics. Each manifest stores partition data and column-level stats (row count, null count, min/max values) for each data file.
+  </Step>
+  
+  <Step title="Data Files">
+    The actual data in Parquet, Avro, or ORC format.
+  </Step>
+</Steps>
+
+```
+Metadata File
+  └─ Manifest List (Snapshot)
+      ├─ Manifest File 1
+      │   ├─ data-file-1.parquet (with stats)
+      │   ├─ data-file-2.parquet (with stats)
+      │   └─ data-file-3.parquet (with stats)
+      └─ Manifest File 2
+          ├─ data-file-4.parquet (with stats)
+          └─ data-file-5.parquet (with stats)
+```
+
+## Performance Benefits
+
+<Accordion title="Fast Scan Planning">
+Iceberg's metadata tree enables O(1) RPC calls to plan queries, instead of O(n) directory listings. Even petabyte-scale tables can be planned on a single node.
+
+- Manifest lists act as an index over manifest files
+- Partition and column statistics enable aggressive file pruning
+- No distributed planning required for metadata operations
+</Accordion>
+
+<Accordion title="Advanced Data Filtering">
+Data files are pruned using:
+- Partition values (automatic from hidden partitioning)
+- Column-level statistics (min/max, null count, value count)
+- Expression pushdown (predicates evaluated at metadata level)
+
+This can provide 10x performance improvements for selective queries.
+</Accordion>
+
+<Accordion title="Distributed Planning">
+File pruning and predicate pushdown happens in parallel on worker nodes, removing the metastore as a bottleneck.
+</Accordion>
+
+## Reliability Guarantees
+
+Iceberg was designed to solve correctness problems in eventually-consistent cloud object stores:
+
+- **Serializable isolation**: All table changes occur in a linear history of atomic updates
+- **Reliable reads**: Readers use a consistent snapshot without holding locks
+- **No file listing**: Works with any object store; no consistent listing required
+- **Concurrent writes**: Multiple writers use optimistic concurrency with automatic retry
+- **Safe operations**: Enables compaction, late data handling, and partition changes safely
+
+<Warning>
+Traditional formats like Hive rely on file listing and rename operations, which are unsafe on S3 and other eventually-consistent stores. Iceberg solves this by tracking all files in metadata.
+</Warning>
+
+## Multi-Engine Support
+
+Iceberg tables work with multiple compute engines simultaneously:
+
+- **Apache Spark** - Most feature-rich engine for Iceberg
+- **Trino / PrestoDB** - Fast SQL queries
+- **Apache Flink** - Streaming reads and writes
+- **Apache Hive** - Batch processing
+- **Dremio** - Data lakehouse platform
+- **Impala** - High-performance SQL
+
+All engines can safely read and write the same Iceberg tables concurrently.
+
+## Open Standard
+
+Iceberg is:
+
+- **Apache 2.0 licensed** - Completely open source
+- **Vendor neutral** - No single company controls the format
+- **Well specified** - Detailed specification ensures compatibility
+- **Multi-language** - Implementations in Java, Python, Rust, Go, and C++
+
+## Getting Started
+
+Ready to start using Iceberg? Check out these resources:
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get started with Iceberg in minutes
+  </Card>
+  <Card title="Java API Guide" icon="code" href="/java-api-quickstart">
+    Learn the Java API for programmatic access
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="https://iceberg.apache.org/spec">
+    Deep dive into the table format specification
+  </Card>
+  <Card title="Community" icon="users" href="https://iceberg.apache.org/community">
+    Join the Apache Iceberg community
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+Now that you understand what Iceberg is and why it exists, you can:
+
+1. Follow the [Quick Start Guide](/quickstart) to create your first table
+2. Learn the [Java API](/java-api-quickstart) for programmatic table management
+3. Explore advanced features like branching, tagging, and table maintenance
+4. Read the [specification](https://iceberg.apache.org/spec) to understand the format in detail

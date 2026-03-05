@@ -1,0 +1,398 @@
+---
+title: Table Maintenance
+description: Learn how to maintain Apache Iceberg tables through snapshot expiration, compaction, and orphan file cleanup
+---
+
+Regular maintenance is essential for optimal Iceberg table performance. This guide covers recommended and optional maintenance operations to keep your tables healthy.
+
+<Note>
+Maintenance operations require a loaded `Table` instance. See the [Java API quickstart](/getting-started/java) for details on loading tables.
+</Note>
+
+## Recommended Maintenance
+
+These operations should be performed regularly on all production tables.
+
+### Expire Snapshots
+
+Each write to an Iceberg table creates a new snapshot (version) of the table. Snapshots enable time-travel queries and rollback, but they accumulate over time and must be expired to delete unused data files and keep metadata compact.
+
+<Steps>
+
+<Step title="Basic expiration">
+Expire snapshots older than a specific timestamp:
+
+```java
+Table table = ...;
+long tsToExpire = System.currentTimeMillis() - (1000 * 60 * 60 * 24); // 1 day
+
+table.expireSnapshots()
+    .expireOlderThan(tsToExpire)
+    .commit();
+```
+</Step>
+
+<Step title="Retain recent snapshots">
+Keep a minimum number of recent snapshots even if they're older than the expiration time:
+
+```java
+table.expireSnapshots()
+    .expireOlderThan(tsToExpire)
+    .retainLast(5) // Keep at least 5 most recent snapshots
+    .commit();
+```
+</Step>
+
+<Step title="Expire specific snapshots">
+Expire a specific snapshot by ID:
+
+```java
+table.expireSnapshots()
+    .expireSnapshotId(12345678L)
+    .commit();
+```
+</Step>
+
+</Steps>
+
+#### Parallel Expiration with Spark Actions
+
+For large tables, use Spark actions to expire snapshots in parallel:
+
+```java
+import org.apache.iceberg.actions.SparkActions;
+
+Table table = ...;
+long tsToExpire = System.currentTimeMillis() - (1000 * 60 * 60 * 24 * 7); // 7 days
+
+SparkActions
+    .get()
+    .expireSnapshots(table)
+    .expireOlderThan(tsToExpire)
+    .execute();
+```
+
+#### Cleanup Levels
+
+Control what gets cleaned up during expiration:
+
+```java
+import org.apache.iceberg.ExpireSnapshots.CleanupLevel;
+
+// Only remove snapshot metadata, keep data and manifest files
+table.expireSnapshots()
+    .expireOlderThan(tsToExpire)
+    .cleanupLevel(CleanupLevel.METADATA_ONLY)
+    .commit();
+
+// Remove both metadata and data files (default)
+table.expireSnapshots()
+    .expireOlderThan(tsToExpire)
+    .cleanupLevel(CleanupLevel.ALL)
+    .commit();
+
+// Skip all cleanup, only remove snapshot references
+table.expireSnapshots()
+    .expireOlderThan(tsToExpire)
+    .cleanupLevel(CleanupLevel.NONE)
+    .commit();
+```
+
+<Note>
+Use `METADATA_ONLY` when data files are shared across tables or when using procedures like `add-files` that may reference the same data files.
+</Note>
+
+#### Custom Deletion and Parallelism
+
+```java
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+ExecutorService executor = Executors.newFixedThreadPool(10);
+
+table.expireSnapshots()
+    .expireOlderThan(tsToExpire)
+    .executeDeleteWith(executor) // Parallel file deletion
+    .planWith(executor)           // Parallel planning
+    .deleteWith(file -> {
+        // Custom deletion logic
+        customFileSystem.delete(file);
+    })
+    .commit();
+
+executor.shutdown();
+```
+
+<Warning>
+Data files are not deleted until they are no longer referenced by any snapshot that may be used for time travel or rollback. Regularly expiring snapshots is essential to reclaim storage.
+</Warning>
+
+### Remove Old Metadata Files
+
+Iceberg tracks table metadata using JSON files. Each table change produces a new metadata file for atomicity. Over time, these accumulate and need cleanup.
+
+#### Automatic Metadata Deletion
+
+Configure automatic deletion of old metadata files:
+
+```java
+table.updateProperties()
+    .set("write.metadata.delete-after-commit.enabled", "true")
+    .set("write.metadata.previous-versions-max", "100")
+    .commit();
+```
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `write.metadata.delete-after-commit.enabled` | `false` | Delete oldest tracked metadata file after each commit |
+| `write.metadata.previous-versions-max` | `100` | Number of previous metadata versions to track |
+
+#### Metadata Cleanup Examples
+
+<CodeGroup>
+
+```text Conservative Approach
+Configuration:
+- write.metadata.delete-after-commit.enabled = false
+- write.metadata.previous-versions-max = 10
+
+Result after 100 commits:
+- 10 tracked metadata files
+- 90 orphaned metadata files
+
+Note: Orphaned files require orphan file deletion to clean up
+```
+
+```text Aggressive Approach  
+Configuration:
+- write.metadata.delete-after-commit.enabled = true
+- write.metadata.previous-versions-max = 20
+
+Result after 21 commits:
+- 20 tracked metadata files
+- 0 orphaned files (oldest deleted automatically)
+
+Note: Each subsequent commit deletes the oldest metadata file
+```
+
+</CodeGroup>
+
+<Note>
+Orphaned metadata files (untracked in the metadata log) are only cleaned by the [orphan file deletion](#delete-orphan-files) procedure.
+</Note>
+
+### Delete Orphan Files
+
+Task or job failures in distributed processing can leave files unreferenced by table metadata. The orphan file deletion action cleans these up.
+
+```java
+import org.apache.iceberg.actions.SparkActions;
+
+Table table = ...;
+
+SparkActions
+    .get()
+    .deleteOrphanFiles(table)
+    .execute();
+```
+
+#### Configure Retention Interval
+
+```java
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+
+// Only delete files older than 5 days
+Instant olderThan = Instant.now().minus(5, ChronoUnit.DAYS);
+
+SparkActions
+    .get()
+    .deleteOrphanFiles(table)
+    .olderThan(olderThan.toEpochMilli())
+    .execute();
+```
+
+<Warning>
+It is dangerous to remove orphan files with a retention interval shorter than the time expected for any write to complete. The default interval is 3 days. Setting it too short might corrupt the table by deleting in-progress files.
+</Warning>
+
+#### Location-Based Cleanup
+
+```java
+// Clean specific locations
+SparkActions
+    .get()
+    .deleteOrphanFiles(table)
+    .location("s3://bucket/warehouse/db/table/data/")
+    .execute();
+```
+
+<Warning>
+Iceberg uses string representations of paths when determining which files to remove. On some file systems, paths can change over time while representing the same file (e.g., HDFS authority changes). This will lead to data loss when orphan file deletion is run. Ensure entries in metadata tables match current file listings.
+</Warning>
+
+## Optional Maintenance
+
+These operations improve performance for specific workload patterns.
+
+### Compact Data Files
+
+Small data files increase metadata overhead and reduce query performance. The rewrite data files action combines small files into larger ones.
+
+```java
+import org.apache.iceberg.actions.SparkActions;
+import static org.apache.iceberg.expressions.Expressions.*;
+
+Table table = ...;
+
+SparkActions
+    .get()
+    .rewriteDataFiles(table)
+    .filter(equal("date", "2024-01-18")) // Compact specific partition
+    .option("target-file-size-bytes", Long.toString(500 * 1024 * 1024)) // 500 MB
+    .execute();
+```
+
+#### When to Compact
+
+Use the `files` metadata table to identify partitions needing compaction:
+
+```sql
+SELECT 
+  date,
+  COUNT(*) as file_count,
+  AVG(file_size_in_bytes) / 1024 / 1024 as avg_size_mb
+FROM my_table.files
+GROUP BY date
+HAVING COUNT(*) > 100 OR AVG(file_size_in_bytes) < 10485760 -- < 10 MB
+ORDER BY file_count DESC;
+```
+
+#### Compaction Options
+
+```java
+SparkActions
+    .get()
+    .rewriteDataFiles(table)
+    .option("target-file-size-bytes", "536870912")        // 512 MB
+    .option("min-file-size-bytes", "104857600")           // Only rewrite files < 100 MB
+    .option("max-file-group-size-bytes", "107374182400")  // 100 GB per file group
+    .option("partial-progress.enabled", "true")           // Enable partial commits
+    .option("partial-progress.max-commits", "10")
+    .execute();
+```
+
+<Note>
+Streaming queries that produce many small files are prime candidates for regular compaction.
+</Note>
+
+### Rewrite Manifests
+
+Manifests organize file metadata for efficient query planning. Rewriting manifests can optimize metadata access patterns.
+
+#### Basic Manifest Rewrite
+
+```java
+import org.apache.iceberg.actions.SparkActions;
+
+Table table = ...;
+
+SparkActions
+    .get()
+    .rewriteManifests(table)
+    .rewriteIf(file -> file.length() < 10 * 1024 * 1024) // Rewrite manifests < 10 MB
+    .execute();
+```
+
+#### API-Based Manifest Rewrite
+
+```java
+table.rewriteManifests()
+    .clusterBy(file -> file.partition().get(0, Integer.class)) // Group by first partition field
+    .commit();
+```
+
+#### When to Rewrite Manifests
+
+1. **Many small manifests**: After many small commits (streaming workloads)
+2. **Misaligned write patterns**: Write pattern doesn't match read filters
+3. **After large deletes**: After deleting significant amounts of data
+
+<Note>
+Manifests are automatically compacted in write order. Rewriting is most beneficial when the write pattern doesn't align with query patterns.
+</Note>
+
+## Maintenance Schedule
+
+Recommended maintenance schedule for production tables:
+
+| Operation | Frequency | Triggers |
+|-----------|-----------|----------|
+| **Expire Snapshots** | Daily | - Keep 3-7 days for time travel<br/>- Retain last 10 snapshots minimum |
+| **Delete Orphan Files** | Weekly | - After failed jobs<br/>- After bulk operations |
+| **Compact Data Files** | Weekly | - Average file size < 100 MB<br/>- File count > 1000 per partition |
+| **Rewrite Manifests** | Monthly | - Many small commits<br/>- After schema changes |
+| **Clean Metadata Files** | Automatic | - Enable `write.metadata.delete-after-commit.enabled` |
+
+## Complete Maintenance Example
+
+```java
+import org.apache.iceberg.*;
+import org.apache.iceberg.actions.SparkActions;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.TableIdentifier;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+
+public class TableMaintenance {
+  public static void performMaintenance(Catalog catalog, TableIdentifier tableId) {
+    Table table = catalog.loadTable(tableId);
+    
+    System.out.println("Starting maintenance for: " + tableId);
+    
+    // 1. Expire old snapshots (keep 7 days)
+    long sevenDaysAgo = System.currentTimeMillis() - (7 * 24 * 60 * 60 * 1000L);
+    table.expireSnapshots()
+        .expireOlderThan(sevenDaysAgo)
+        .retainLast(10)
+        .commit();
+    System.out.println("✓ Expired snapshots older than 7 days");
+    
+    // 2. Delete orphan files (older than 3 days)
+    Instant threeDaysAgo = Instant.now().minus(3, ChronoUnit.DAYS);
+    SparkActions.get()
+        .deleteOrphanFiles(table)
+        .olderThan(threeDaysAgo.toEpochMilli())
+        .execute();
+    System.out.println("✓ Deleted orphan files");
+    
+    // 3. Compact small files
+    SparkActions.get()
+        .rewriteDataFiles(table)
+        .option("target-file-size-bytes", Long.toString(512 * 1024 * 1024))
+        .option("min-file-size-bytes", Long.toString(100 * 1024 * 1024))
+        .execute();
+    System.out.println("✓ Compacted data files");
+    
+    // 4. Rewrite small manifests
+    SparkActions.get()
+        .rewriteManifests(table)
+        .rewriteIf(manifest -> manifest.length() < 8 * 1024 * 1024)
+        .execute();
+    System.out.println("✓ Rewritten manifests");
+    
+    System.out.println("Maintenance complete!");
+  }
+}
+```
+
+## Best Practices
+
+1. **Automate maintenance**: Schedule regular maintenance jobs
+2. **Monitor table health**: Track snapshot count, file sizes, and metadata growth
+3. **Conservative expiration**: Keep enough snapshots for typical time-travel needs
+4. **Safe orphan cleanup**: Use retention intervals longer than write job durations
+5. **Compact incrementally**: Target specific partitions to reduce processing time
+6. **Test on copies**: Validate maintenance procedures on table copies first
+7. **Use Spark actions**: Leverage parallel processing for large tables
+8. **Enable auto-cleanup**: Set `write.metadata.delete-after-commit.enabled=true`

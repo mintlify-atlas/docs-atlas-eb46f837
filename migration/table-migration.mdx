@@ -1,0 +1,115 @@
+---
+title: "Table Migration Overview"
+description: "Learn about migrating existing tables to Apache Iceberg format"
+---
+
+Apache Iceberg supports converting existing tables in other formats to Iceberg tables. This guide introduces the general concept of table migration, its approaches, and existing implementations in Iceberg.
+
+## Migration Approaches
+
+There are two methods for executing table migration: **full data migration** and **in-place metadata migration**.
+
+<CardGroup cols={2}>
+  <Card title="Full Data Migration" icon="copy">
+    Copies all data files from the source table to the new Iceberg table. Makes the new table fully isolated but is slower and doubles the space.
+  </Card>
+  <Card title="In-Place Metadata Migration" icon="layer-group">
+    Preserves existing data files while incorporating Iceberg metadata on top of them. Faster and eliminates data duplication but tables are not fully isolated.
+  </Card>
+</CardGroup>
+
+### Full Data Migration
+
+Full data migration involves copying all data files from the source table to the new Iceberg table. This method makes the new table fully isolated from the source table, but is slower and doubles the space.
+
+In practice, users can use operations like:
+- **Create-Table-As-Select (CTAS)**
+- **INSERT** statements
+- **Change-Data-Capture pipelines**
+
+### In-Place Metadata Migration
+
+In-place metadata migration preserves the existing data files while incorporating Iceberg metadata on top of them. This method is not only faster but also eliminates the need for data duplication.
+
+<Warning>
+The new table and the source table are not fully isolated. If any processes vacuum data files from the source table, the new table will also be affected.
+</Warning>
+
+![In-Place Metadata Migration](/images/iceberg-in-place-metadata-migration.png)
+
+Apache Iceberg supports the in-place metadata migration approach, which includes three important actions:
+
+## Snapshot Table
+
+The Snapshot Table action creates a new Iceberg table with a different name and with the same schema and partitioning as the source table, leaving the source table unchanged during and after the action.
+
+<Steps>
+  <Step title="Create new Iceberg table">
+    Create a new Iceberg table with the same metadata (schema, partition spec, etc.) as the source table and a different name. Readers and Writers on the source table can continue to work.
+
+    ![Snapshot Table Step 1](/images/iceberg-snapshotaction-step1.png)
+  </Step>
+
+  <Step title="Commit data files">
+    Commit all data files across all partitions to the new Iceberg table. The source table remains unchanged. Readers can be switched to the new Iceberg table.
+
+    ![Snapshot Table Step 2](/images/iceberg-snapshotaction-step2.png)
+  </Step>
+
+  <Step title="Switch writers">
+    Eventually, all writers can be switched to the new Iceberg table. Once all writers are transitioned to the new Iceberg table, the migration process will be considered complete.
+  </Step>
+</Steps>
+
+## Migrate Table
+
+The Migrate Table action also creates a new Iceberg table with the same schema and partitioning as the source table. However, during the action execution, it locks and drops the source table from the catalog.
+
+<Warning>
+Migrate Table requires all modifications working on the source table to be stopped before the action is performed.
+</Warning>
+
+<Steps>
+  <Step title="Stop all writers">
+    Stop all writers interacting with the source table. Readers that also support Iceberg may continue reading.
+
+    ![Migrate Table Step 1](/images/iceberg-migrateaction-step1.png)
+  </Step>
+
+  <Step title="Create new table and rename source">
+    Create a new Iceberg table with the same identifier and metadata (schema, partition spec, etc.) as the source table. Rename the source table for a backup in case of failure and rollback.
+
+    ![Migrate Table Step 2](/images/iceberg-migrateaction-step2.png)
+  </Step>
+
+  <Step title="Commit files and drop source">
+    Commit all data files across all partitions to the new Iceberg table. Drop the source table. Writers can start writing to the new Iceberg table.
+
+    ![Migrate Table Step 3](/images/iceberg-migrateaction-step3.png)
+  </Step>
+</Steps>
+
+## Add Files
+
+After the initial step (either Snapshot Table or Migrate Table), it is common to find some data files that have not been migrated. These files often originate from concurrent writers who continue writing to the source table during or after the migration process.
+
+In practice, these files can be:
+- New data files in Hive tables
+- New snapshots (versions) of Delta Lake tables
+
+<Info>
+The Add Files action is essential for incorporating these files into the Iceberg table.
+</Info>
+
+## Migration by Table Format
+
+Iceberg supports migration from different table formats:
+
+<CardGroup cols={2}>
+  <Card title="Hive Migration" icon="database" href="/migration/hive-migration">
+    Migrate from Apache Hive tables to Iceberg format
+  </Card>
+  <Card title="Delta Lake Migration" icon="layer-group" href="/migration/delta-lake-migration">
+    Migrate from Delta Lake tables to Iceberg format
+  </Card>
+</CardGroup>

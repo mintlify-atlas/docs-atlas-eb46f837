@@ -1,0 +1,258 @@
+---
+title: REST Catalog API Overview
+description: Overview of the Apache Iceberg REST Catalog API specification
+---
+
+# REST Catalog API
+
+The REST Catalog API provides a standardized HTTP-based interface for managing Iceberg tables, views, and namespaces. It enables catalog implementations to expose Iceberg metadata operations through REST endpoints.
+
+## Overview
+
+The REST Catalog API specification defines:
+- Catalog configuration and discovery
+- Namespace operations (create, list, update, delete)
+- Table operations (create, load, update, delete, rename)
+- View operations (create, load, replace, delete, rename)
+- Transaction support for multi-table commits
+- Authentication and authorization patterns
+
+## API Version
+
+**Current Version:** 0.0.1  
+**Base Path:** `/v1`
+
+## Server URLs
+
+The API uses configurable server URLs:
+
+```
+{scheme}://{host}:{port}/{basePath}
+```
+
+**Example:**
+```
+https://catalog.example.com:443/v1
+```
+
+## Authentication
+
+The REST Catalog API supports:
+- **OAuth2** - Standard OAuth2 flows for token-based authentication
+- **Bearer Token** - Direct bearer token authentication
+
+All endpoints require authentication via the `Authorization` header:
+
+```http
+Authorization: Bearer <token>
+```
+
+## API Endpoints
+
+The REST Catalog API is organized into several functional areas:
+
+### Configuration
+- `GET /v1/config` - Get catalog configuration and server capabilities
+
+### Namespaces
+- `GET /v1/{prefix}/namespaces` - List namespaces
+- `POST /v1/{prefix}/namespaces` - Create a namespace
+- `GET /v1/{prefix}/namespaces/{namespace}` - Load namespace metadata
+- `HEAD /v1/{prefix}/namespaces/{namespace}` - Check if namespace exists
+- `DELETE /v1/{prefix}/namespaces/{namespace}` - Drop a namespace
+- `POST /v1/{prefix}/namespaces/{namespace}/properties` - Update namespace properties
+
+### Tables
+- `GET /v1/{prefix}/namespaces/{namespace}/tables` - List tables
+- `POST /v1/{prefix}/namespaces/{namespace}/tables` - Create a table
+- `GET /v1/{prefix}/namespaces/{namespace}/tables/{table}` - Load table metadata
+- `POST /v1/{prefix}/namespaces/{namespace}/tables/{table}` - Update table
+- `DELETE /v1/{prefix}/namespaces/{namespace}/tables/{table}` - Drop table
+- `HEAD /v1/{prefix}/namespaces/{namespace}/tables/{table}` - Check if table exists
+- `POST /v1/{prefix}/tables/rename` - Rename a table
+- `POST /v1/{prefix}/namespaces/{namespace}/register` - Register existing table
+
+### Views
+- `GET /v1/{prefix}/namespaces/{namespace}/views` - List views
+- `POST /v1/{prefix}/namespaces/{namespace}/views` - Create a view
+- `GET /v1/{prefix}/namespaces/{namespace}/views/{view}` - Load view metadata
+- `POST /v1/{prefix}/namespaces/{namespace}/views/{view}` - Replace view
+- `DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}` - Drop view
+- `HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}` - Check if view exists
+- `POST /v1/{prefix}/views/rename` - Rename a view
+
+### Transactions
+- `POST /v1/{prefix}/transactions/commit` - Commit multi-table transaction
+
+## Common Patterns
+
+### Namespace Identifiers
+
+Namespaces can be multi-level. Parts are separated by a configurable separator (default: `0x1F` byte, URL-encoded as `%1F`):
+
+```
+accounting           → single-level namespace
+accounting%1Ftax     → multi-level namespace (accounting.tax)
+```
+
+### Pagination
+
+List endpoints support optional pagination via:
+- `pageToken` query parameter
+- `next-page-token` in response
+
+```http
+GET /v1/namespaces?pageToken=abc123&pageSize=100
+```
+
+### Idempotency
+
+Mutation endpoints support idempotency via the `Idempotency-Key` header:
+
+```http
+Idempotency-Key: 017F22E2-79B0-7CC3-98C4-DC0C0C07398F
+```
+
+- Format: UUIDv7 (RFC 9562)
+- Servers must return equivalent responses for repeated requests with the same key
+- Key lifetime is advertised in catalog configuration
+
+### Prefix Parameter
+
+All endpoints include an optional `{prefix}` path parameter for multi-tenant deployments:
+
+```
+/v1/production/namespaces
+/v1/staging/namespaces
+```
+
+## Response Codes
+
+### Success Codes
+- `200 OK` - Successful request with response body
+- `201 Created` - Resource created successfully
+- `204 No Content` - Successful request without response body
+- `304 Not Modified` - Resource unchanged (when using ETags)
+
+### Client Error Codes
+- `400 Bad Request` - Invalid request format or parameters
+- `401 Unauthorized` - Authentication required or failed
+- `403 Forbidden` - Authenticated but not authorized
+- `404 Not Found` - Resource does not exist
+- `406 Not Acceptable` - Operation not supported
+- `409 Conflict` - Resource already exists or commit conflict
+- `419 Authentication Timeout` - Authentication expired
+- `422 Unprocessable Entity` - Request semantically invalid
+
+### Server Error Codes
+- `500 Internal Server Error` - Server-side error
+- `502 Bad Gateway` - Gateway/proxy error
+- `503 Service Unavailable` - Temporary unavailability
+- `504 Gateway Timeout` - Gateway timeout
+
+## Error Response Format
+
+All error responses use a consistent JSON format:
+
+```json
+{
+  "error": {
+    "message": "Namespace already exists: accounting.tax",
+    "type": "NamespaceAlreadyExistsException",
+    "code": 409,
+    "stack": ["..."]
+  }
+}
+```
+
+## Configuration Discovery
+
+Clients should start by calling `GET /v1/config` to:
+1. Discover server capabilities
+2. Receive default and override configuration
+3. Learn supported endpoints
+4. Get idempotency key lifetime
+
+```http
+GET /v1/config HTTP/1.1
+Host: catalog.example.com
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "defaults": {
+    "clients": "4"
+  },
+  "overrides": {
+    "warehouse": "s3://bucket/warehouse/"
+  },
+  "endpoints": [
+    "GET /v1/{prefix}/namespaces",
+    "POST /v1/{prefix}/namespaces",
+    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}"
+  ],
+  "idempotency-key-lifetime": "PT30M"
+}
+```
+
+## Data Access Delegation
+
+The API supports delegated data access through:
+
+### Vended Credentials
+
+Servers can provide temporary credentials for accessing table data:
+
+```http
+X-Iceberg-Access-Delegation: vended-credentials
+```
+
+### Remote Signing
+
+Servers can sign data access requests on behalf of clients:
+
+```http
+X-Iceberg-Access-Delegation: remote-signing
+```
+
+## Best Practices
+
+1. **Always call /config first**: Get server capabilities before making other requests
+2. **Use idempotency keys**: Ensure safe retries for mutation operations
+3. **Handle pagination**: Don't assume all results fit in one response
+4. **Check supported endpoints**: Not all servers implement all endpoints
+5. **Use appropriate timeouts**: Respect server processing times
+6. **Cache configuration**: Avoid repeated /config calls
+7. **Follow redirect responses**: Handle 3xx responses appropriately
+
+## Specification Details
+
+For detailed endpoint specifications, see:
+
+- [Configuration](/api/rest/configuration) - Catalog configuration and discovery
+- [Namespaces](/api/rest/namespaces) - Namespace management
+- [Tables](/api/rest/tables) - Table operations
+- [Views](/api/rest/views) - View operations
+
+## OpenAPI Specification
+
+The complete OpenAPI 3.1 specification is available in the Iceberg repository:
+
+```
+source/open-api/rest-catalog-open-api.yaml
+```
+
+## Reference Implementation
+
+The Iceberg project provides reference implementations:
+- Java REST catalog client
+- Python REST catalog client
+- Example server implementations
+
+## Related Resources
+
+- [Catalog Configuration](/configuration/catalog-properties) - Catalog configuration properties
+- [Table Metadata](/spec/table-metadata) - Table metadata format
+- [View Metadata](/spec/view-metadata) - View metadata format
+- [OAuth2 Integration](/security/oauth2) - Authentication setup

@@ -1,0 +1,605 @@
+---
+title: 'SortOrder'
+description: 'Apache Iceberg SortOrder API reference'
+---
+
+# SortOrder Class
+
+The `SortOrder` class defines how data and delete files should be ordered in an Apache Iceberg table.
+
+**Package:** `org.apache.iceberg`
+
+## Overview
+
+The `SortOrder` class provides:
+- Multi-column sorting specifications
+- Custom sort directions (ascending/descending)
+- Null ordering control (nulls first/last)
+- Sort order evolution with order IDs
+- Transform-based sorting
+
+<Info>
+Sort order ID 0 is reserved for unsorted tables. All custom sort orders must use IDs greater than 0.
+</Info>
+
+## Basic Methods
+
+### schema()
+
+```java
+public Schema schema()
+```
+
+Returns the schema for this sort order.
+
+**Returns:** The Schema this sort order is bound to
+
+---
+
+### orderId()
+
+```java
+public int orderId()
+```
+
+Returns the ID of this sort order.
+
+**Returns:** The order ID (0 for unsorted)
+
+---
+
+### fields()
+
+```java
+public List<SortField> fields()
+```
+
+Returns the list of sort fields for this sort order.
+
+**Returns:** List of SortField objects
+
+**Example:**
+```java
+SortOrder sortOrder = table.sortOrder();
+for (SortField field : sortOrder.fields()) {
+    System.out.println(field.sourceId() + " " + field.direction());
+}
+```
+
+---
+
+### isSorted()
+
+```java
+public boolean isSorted()
+```
+
+Returns true if the sort order has at least one sort field.
+
+**Returns:** True if sorted, false otherwise
+
+---
+
+### isUnsorted()
+
+```java
+public boolean isUnsorted()
+```
+
+Returns true if the sort order has no sort fields.
+
+**Returns:** True if unsorted, false otherwise
+
+## Sort Order Comparison
+
+### satisfies(SortOrder anotherSortOrder)
+
+```java
+public boolean satisfies(SortOrder anotherSortOrder)
+```
+
+Checks whether this order satisfies another order.
+
+A sort order satisfies another if:
+- The other order is unsorted, OR
+- This order has at least as many fields as the other, AND
+- Each field in the other order is satisfied by the corresponding field in this order
+
+<ParamField path="anotherSortOrder" type="SortOrder" required>
+  The sort order to check against
+</ParamField>
+
+**Returns:** True if this order satisfies the given order
+
+**Example:**
+```java
+SortOrder order1 = SortOrder.builderFor(schema)
+    .asc("timestamp")
+    .asc("id")
+    .build();
+
+SortOrder order2 = SortOrder.builderFor(schema)
+    .asc("timestamp")
+    .build();
+
+// order1 satisfies order2 (has timestamp ascending)
+assert order1.satisfies(order2);
+
+// order2 does NOT satisfy order1 (missing id field)
+assert !order2.satisfies(order1);
+```
+
+---
+
+### sameOrder(SortOrder anotherSortOrder)
+
+```java
+public boolean sameOrder(SortOrder anotherSortOrder)
+```
+
+Checks whether this order is equivalent to another order while ignoring the order ID.
+
+<ParamField path="anotherSortOrder" type="SortOrder" required>
+  The sort order to compare
+</ParamField>
+
+**Returns:** True if the orders are equivalent
+
+## Conversion
+
+### toUnbound()
+
+```java
+public UnboundSortOrder toUnbound()
+```
+
+Converts this sort order to an unbound sort order.
+
+**Returns:** An UnboundSortOrder representation
+
+## Static Factory Methods
+
+### unsorted()
+
+```java
+public static SortOrder unsorted()
+```
+
+Returns a sort order for unsorted tables.
+
+**Returns:** An unsorted order with order ID 0
+
+**Example:**
+```java
+SortOrder order = SortOrder.unsorted();
+assert order.isUnsorted();
+assert order.orderId() == 0;
+```
+
+---
+
+### builderFor(Schema schema)
+
+```java
+public static Builder builderFor(Schema schema)
+```
+
+Creates a new sort order builder for the given schema.
+
+<ParamField path="schema" type="Schema" required>
+  The table schema
+</ParamField>
+
+**Returns:** A Builder instance
+
+**Example:**
+```java
+SortOrder order = SortOrder.builderFor(schema)
+    .asc("timestamp")
+    .desc("priority")
+    .build();
+```
+
+## Builder Class
+
+The `Builder` class creates valid sort orders.
+
+### Builder Methods
+
+#### asc(Term term)
+
+```java
+public Builder asc(Term term)
+```
+
+Adds an expression term to the sort in ascending order with nulls first.
+
+<ParamField path="term" type="Term" required>
+  An expression term (e.g., `Expressions.ref("column")`)
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+**Example:**
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+Builder builder = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("timestamp"));
+```
+
+---
+
+#### asc(Term term, NullOrder nullOrder)
+
+```java
+public Builder asc(Term term, NullOrder nullOrder)
+```
+
+Adds an expression term to the sort in ascending order with custom null ordering.
+
+<ParamField path="term" type="Term" required>
+  An expression term
+</ParamField>
+
+<ParamField path="nullOrder" type="NullOrder" required>
+  Null order (NULLS_FIRST or NULLS_LAST)
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+**Example:**
+```java
+Builder builder = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("timestamp"), NullOrder.NULLS_LAST);
+```
+
+---
+
+#### desc(Term term)
+
+```java
+public Builder desc(Term term)
+```
+
+Adds an expression term to the sort in descending order with nulls first.
+
+<ParamField path="term" type="Term" required>
+  An expression term
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+**Example:**
+```java
+Builder builder = SortOrder.builderFor(schema)
+    .desc(Expressions.ref("priority"));
+```
+
+---
+
+#### desc(Term term, NullOrder nullOrder)
+
+```java
+public Builder desc(Term term, NullOrder nullOrder)
+```
+
+Adds an expression term to the sort in descending order with custom null ordering.
+
+<ParamField path="term" type="Term" required>
+  An expression term
+</ParamField>
+
+<ParamField path="nullOrder" type="NullOrder" required>
+  Null order (NULLS_FIRST or NULLS_LAST)
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+---
+
+#### sortBy(String name, SortDirection direction, NullOrder nullOrder)
+
+```java
+public Builder sortBy(String name, SortDirection direction, NullOrder nullOrder)
+```
+
+Adds a column to the sort by name.
+
+<ParamField path="name" type="String" required>
+  The column name
+</ParamField>
+
+<ParamField path="direction" type="SortDirection" required>
+  Sort direction (ASC or DESC)
+</ParamField>
+
+<ParamField path="nullOrder" type="NullOrder" required>
+  Null order (NULLS_FIRST or NULLS_LAST)
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+**Example:**
+```java
+Builder builder = SortOrder.builderFor(schema)
+    .sortBy("timestamp", SortDirection.ASC, NullOrder.NULLS_LAST);
+```
+
+---
+
+#### sortBy(Term term, SortDirection direction, NullOrder nullOrder)
+
+```java
+public Builder sortBy(Term term, SortDirection direction, NullOrder nullOrder)
+```
+
+Adds an expression term to the sort.
+
+<ParamField path="term" type="Term" required>
+  An expression term
+</ParamField>
+
+<ParamField path="direction" type="SortDirection" required>
+  Sort direction (ASC or DESC)
+</ParamField>
+
+<ParamField path="nullOrder" type="NullOrder" required>
+  Null order (NULLS_FIRST or NULLS_LAST)
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+---
+
+#### withOrderId(int newOrderId)
+
+```java
+public Builder withOrderId(int newOrderId)
+```
+
+Sets the order ID for this sort order.
+
+<ParamField path="newOrderId" type="int" required>
+  The order ID (must be > 0 for sorted orders)
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+<Warning>
+Order ID 0 is reserved for unsorted tables and will cause an error if used with sort fields.
+</Warning>
+
+---
+
+#### caseSensitive(boolean sortCaseSensitive)
+
+```java
+public Builder caseSensitive(boolean sortCaseSensitive)
+```
+
+Sets whether column name matching should be case-sensitive.
+
+<ParamField path="sortCaseSensitive" type="boolean" required>
+  True for case-sensitive matching
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+---
+
+#### build()
+
+```java
+public SortOrder build()
+```
+
+Builds the sort order and validates compatibility with the schema.
+
+**Returns:** A new SortOrder
+
+**Throws:** `ValidationException` if the sort order is invalid
+
+## Static Validation Methods
+
+### checkCompatibility(SortOrder sortOrder, Schema schema)
+
+```java
+public static void checkCompatibility(SortOrder sortOrder, Schema schema)
+```
+
+Checks the compatibility of a sort order with a schema.
+
+Validates that:
+- All source fields exist in the schema
+- All source fields are primitive types
+- All transforms can be applied to their source types
+
+<ParamField path="sortOrder" type="SortOrder" required>
+  The sort order to validate
+</ParamField>
+
+<ParamField path="schema" type="Schema" required>
+  The schema to validate against
+</ParamField>
+
+**Throws:** `ValidationException` if incompatible
+
+## Usage Examples
+
+### Creating an Unsorted Order
+
+```java
+SortOrder order = SortOrder.unsorted();
+assert order.isUnsorted();
+```
+
+### Creating a Simple Sort Order
+
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+SortOrder order = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("timestamp"))
+    .build();
+```
+
+### Creating a Multi-Column Sort Order
+
+```java
+SortOrder order = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("category"))
+    .desc(Expressions.ref("priority"))
+    .asc(Expressions.ref("timestamp"))
+    .build();
+```
+
+### Custom Null Ordering
+
+```java
+import org.apache.iceberg.NullOrder;
+
+SortOrder order = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("timestamp"), NullOrder.NULLS_LAST)
+    .desc(Expressions.ref("score"), NullOrder.NULLS_FIRST)
+    .build();
+```
+
+### Sort with Transforms
+
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+SortOrder order = SortOrder.builderFor(schema)
+    .asc(Expressions.year("timestamp"))  // Sort by year
+    .asc(Expressions.bucket("user_id", 16))  // Then by user bucket
+    .build();
+```
+
+### Using sortBy Method
+
+```java
+import org.apache.iceberg.SortDirection;
+import org.apache.iceberg.NullOrder;
+
+SortOrder order = SortOrder.builderFor(schema)
+    .sortBy("timestamp", SortDirection.ASC, NullOrder.NULLS_LAST)
+    .sortBy("id", SortDirection.DESC, NullOrder.NULLS_FIRST)
+    .build();
+```
+
+### Updating Table Sort Order
+
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+table.replaceSortOrder()
+    .asc(Expressions.ref("timestamp"))
+    .desc(Expressions.ref("priority"))
+    .commit();
+```
+
+### Checking Sort Order Satisfaction
+
+```java
+SortOrder order1 = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("timestamp"))
+    .asc(Expressions.ref("id"))
+    .build();
+
+SortOrder order2 = SortOrder.builderFor(schema)
+    .asc(Expressions.ref("timestamp"))
+    .build();
+
+if (order1.satisfies(order2)) {
+    System.out.println("order1 can be used for queries requiring order2");
+}
+```
+
+### Inspecting Sort Fields
+
+```java
+SortOrder order = table.sortOrder();
+
+if (order.isSorted()) {
+    System.out.println("Order ID: " + order.orderId());
+    for (SortField field : order.fields()) {
+        System.out.println("Field: " + field.sourceId());
+        System.out.println("  Direction: " + field.direction());
+        System.out.println("  Null order: " + field.nullOrder());
+        System.out.println("  Transform: " + field.transform());
+    }
+} else {
+    System.out.println("Table is unsorted");
+}
+```
+
+### Sort Order Evolution
+
+```java
+// Original sort order
+SortOrder order1 = SortOrder.builderFor(schema)
+    .withOrderId(1)
+    .asc(Expressions.ref("timestamp"))
+    .build();
+
+// Evolved sort order with additional sort field
+SortOrder order2 = SortOrder.builderFor(schema)
+    .withOrderId(2)
+    .asc(Expressions.ref("timestamp"))
+    .asc(Expressions.ref("category"))
+    .build();
+
+// order2 satisfies order1
+assert order2.satisfies(order1);
+```
+
+### Case-Insensitive Builder
+
+```java
+SortOrder order = SortOrder.builderFor(schema)
+    .caseSensitive(false)
+    .asc(Expressions.ref("TIMESTAMP"))  // Will match "timestamp"
+    .build();
+```
+
+## Enums
+
+### SortDirection
+
+```java
+public enum SortDirection {
+    ASC,   // Ascending order
+    DESC   // Descending order
+}
+```
+
+### NullOrder
+
+```java
+public enum NullOrder {
+    NULLS_FIRST,  // Null values appear first
+    NULLS_LAST    // Null values appear last
+}
+```
+
+## Best Practices
+
+<Tip>
+**Sort Order Strategy:**
+- Sort by commonly filtered columns to improve query performance
+- Place high-cardinality columns first
+- Use transforms (like year, month, bucket) for efficient data organization
+- Consider data clustering when designing sort orders
+</Tip>
+
+<Warning>
+**Performance Considerations:**
+- Sort orders affect file organization and query performance
+- Changing sort orders requires rewriting data files
+- More sort fields can improve specific queries but increase complexity
+</Warning>
+
+## Source Code Reference
+
+Source: `org/apache/iceberg/SortOrder.java:41`

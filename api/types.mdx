@@ -1,0 +1,467 @@
+---
+title: Types
+description: Type system in Apache Iceberg
+---
+
+The `Types` class provides the type system for Apache Iceberg, defining primitive and complex data types supported in Iceberg schemas.
+
+## Overview
+
+Iceberg's type system includes:
+- Primitive types (boolean, int, long, float, double, date, time, timestamp, string, uuid, fixed, binary, decimal)
+- Complex types (struct, list, map)
+- Special types (variant, geometry, geography)
+
+## Primitive Types
+
+### Boolean
+
+```java
+Types.BooleanType.get()
+```
+
+**Example:**
+```java
+import org.apache.iceberg.types.Types;
+
+Type boolType = Types.BooleanType.get();
+```
+
+### Integer (32-bit)
+
+```java
+Types.IntegerType.get()
+```
+
+### Long (64-bit)
+
+```java
+Types.LongType.get()
+```
+
+### Float (32-bit)
+
+```java
+Types.FloatType.get()
+```
+
+### Double (64-bit)
+
+```java
+Types.DoubleType.get()
+```
+
+### Date
+
+Date without time, stored as days from 1970-01-01.
+
+```java
+Types.DateType.get()
+```
+
+### Time
+
+Time of day without date, stored as microseconds from midnight.
+
+```java
+Types.TimeType.get()
+```
+
+### Timestamp
+
+Timestamp with microsecond precision.
+
+```java
+// With timezone (stored as UTC)
+Types.TimestampType.withZone()
+
+// Without timezone (local time)
+Types.TimestampType.withoutZone()
+```
+
+**Example:**
+```java
+Type timestamptz = Types.TimestampType.withZone();
+Type timestamp = Types.TimestampType.withoutZone();
+
+// Check if timezone aware
+TimestampType ts = (TimestampType) timestamptz;
+boolean adjusts = ts.shouldAdjustToUTC(); // true
+```
+
+### Timestamp Nano
+
+Timestamp with nanosecond precision.
+
+```java
+Types.TimestampNanoType.withZone()
+Types.TimestampNanoType.withoutZone()
+```
+
+### String
+
+Variable-length UTF-8 string.
+
+```java
+Types.StringType.get()
+```
+
+### UUID
+
+Universally unique identifier (128-bit).
+
+```java
+Types.UUIDType.get()
+```
+
+### Fixed
+
+Fixed-length byte array.
+
+```java
+Types.FixedType.ofLength(int length)
+```
+
+**Example:**
+```java
+Type fixed16 = Types.FixedType.ofLength(16);
+Types.FixedType fixedType = (Types.FixedType) fixed16;
+int len = fixedType.length(); // 16
+```
+
+### Binary
+
+Variable-length byte array.
+
+```java
+Types.BinaryType.get()
+```
+
+### Decimal
+
+Fixed-point decimal with precision and scale.
+
+```java
+Types.DecimalType.of(int precision, int scale)
+```
+
+**Parameters:**
+- `precision` - Total number of digits (max 38)
+- `scale` - Number of digits after decimal point
+
+**Example:**
+```java
+Type decimal = Types.DecimalType.of(10, 2); // 10 digits, 2 after decimal
+Types.DecimalType decType = (Types.DecimalType) decimal;
+int prec = decType.precision(); // 10
+int scale = decType.scale();     // 2
+```
+
+## Spatial Types
+
+### Geometry
+
+Geometry type with optional coordinate reference system.
+
+```java
+// Default CRS (OGC:CRS84)
+Types.GeometryType.crs84()
+
+// Custom CRS
+Types.GeometryType.of(String crs)
+```
+
+**Example:**
+```java
+Type geom1 = Types.GeometryType.crs84();
+Type geom2 = Types.GeometryType.of("EPSG:4326");
+
+Types.GeometryType geomType = (Types.GeometryType) geom2;
+String crs = geomType.crs(); // "EPSG:4326"
+```
+
+### Geography
+
+Geography type with CRS and edge algorithm.
+
+```java
+// Default (OGC:CRS84, spherical)
+Types.GeographyType.crs84()
+
+// Custom CRS
+Types.GeographyType.of(String crs)
+
+// Custom CRS and algorithm
+Types.GeographyType.of(String crs, EdgeAlgorithm algorithm)
+```
+
+**Example:**
+```java
+Type geog = Types.GeographyType.of(
+    "EPSG:4326",
+    EdgeAlgorithm.SPHERICAL
+);
+```
+
+## Complex Types
+
+### Struct
+
+Structured type with named fields.
+
+```java
+Types.StructType.of(NestedField... fields)
+Types.StructType.of(List<NestedField> fields)
+```
+
+**Example:**
+```java
+import org.apache.iceberg.types.Types.NestedField;
+
+Type structType = Types.StructType.of(
+    NestedField.required(1, "id", Types.LongType.get()),
+    NestedField.optional(2, "name", Types.StringType.get()),
+    NestedField.required(3, "age", Types.IntegerType.get())
+);
+
+// Access fields
+Types.StructType struct = (Types.StructType) structType;
+NestedField field = struct.field("name");
+Type fieldType = struct.fieldType("name"); // StringType
+```
+
+### List
+
+Ordered collection of elements.
+
+```java
+// Optional elements
+Types.ListType.ofOptional(int elementId, Type elementType)
+
+// Required elements
+Types.ListType.ofRequired(int elementId, Type elementType)
+```
+
+**Example:**
+```java
+Type listType = Types.ListType.ofOptional(
+    1,
+    Types.StringType.get()
+);
+
+Types.ListType list = (Types.ListType) listType;
+Type elemType = list.elementType(); // StringType
+boolean optional = list.isElementOptional(); // true
+int elemId = list.elementId(); // 1
+```
+
+### Map
+
+Key-value pairs.
+
+```java
+// Optional values
+Types.MapType.ofOptional(
+    int keyId,
+    int valueId,
+    Type keyType,
+    Type valueType
+)
+
+// Required values
+Types.MapType.ofRequired(
+    int keyId,
+    int valueId,
+    Type keyType,
+    Type valueType
+)
+```
+
+**Example:**
+```java
+Type mapType = Types.MapType.ofOptional(
+    1, 2,
+    Types.StringType.get(),
+    Types.IntegerType.get()
+);
+
+Types.MapType map = (Types.MapType) mapType;
+Type keyType = map.keyType();    // StringType
+Type valueType = map.valueType(); // IntegerType
+boolean valueOpt = map.isValueOptional(); // true
+```
+
+## Nested Fields
+
+Fields in struct types.
+
+### Creating Fields
+
+```java
+// Optional field
+NestedField.optional(int id, String name, Type type)
+NestedField.optional(int id, String name, Type type, String doc)
+
+// Required field
+NestedField.required(int id, String name, Type type)
+NestedField.required(int id, String name, Type type, String doc)
+```
+
+**Example:**
+```java
+NestedField field1 = NestedField.required(
+    1,
+    "id",
+    Types.LongType.get(),
+    "Unique identifier"
+);
+
+NestedField field2 = NestedField.optional(
+    2,
+    "email",
+    Types.StringType.get()
+);
+```
+
+### Field Builder
+
+```java
+NestedField field = NestedField.builder()
+    .withId(1)
+    .withName("user_id")
+    .ofType(Types.LongType.get())
+    .asRequired()
+    .withDoc("User identifier")
+    .build();
+```
+
+### Field Properties
+
+```java
+int id = field.fieldId();
+String name = field.name();
+Type type = field.type();
+String doc = field.doc();
+boolean optional = field.isOptional();
+boolean required = field.isRequired();
+```
+
+## Type Utilities
+
+### Parsing Type Strings
+
+```java
+Types.fromTypeName(String typeString)
+Types.fromPrimitiveString(String typeString)
+```
+
+**Example:**
+```java
+Type intType = Types.fromTypeName("int");
+Type decType = Types.fromTypeName("decimal(10,2)");
+Type fixedType = Types.fromTypeName("fixed[16]");
+```
+
+### Type Checking
+
+```java
+boolean isPrimitive = type.isPrimitiveType();
+boolean isNested = type.isNestedType();
+boolean isStruct = type.isStructType();
+boolean isList = type.isListType();
+boolean isMap = type.isMapType();
+```
+
+### Type Conversion
+
+```java
+PrimitiveType primType = type.asPrimitiveType();
+StructType structType = type.asStructType();
+ListType listType = type.asListType();
+MapType mapType = type.asMapType();
+```
+
+## Examples
+
+### Creating a Schema with Types
+
+```java
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.types.Types;
+import static org.apache.iceberg.types.Types.NestedField.*;
+
+Schema schema = new Schema(
+    required(1, "id", Types.LongType.get()),
+    optional(2, "data", Types.StringType.get()),
+    required(3, "timestamp", Types.TimestampType.withZone()),
+    optional(4, "amount", Types.DecimalType.of(10, 2)),
+    required(5, "active", Types.BooleanType.get())
+);
+```
+
+### Nested Struct Type
+
+```java
+Type addressType = Types.StructType.of(
+    required(1, "street", Types.StringType.get()),
+    required(2, "city", Types.StringType.get()),
+    optional(3, "zip", Types.StringType.get())
+);
+
+Schema schema = new Schema(
+    required(1, "user_id", Types.LongType.get()),
+    optional(2, "name", Types.StringType.get()),
+    optional(3, "address", addressType)
+);
+```
+
+### Complex Nested Types
+
+```java
+// List of structs
+Type itemType = Types.StructType.of(
+    required(1, "product_id", Types.LongType.get()),
+    required(2, "quantity", Types.IntegerType.get()),
+    optional(3, "price", Types.DecimalType.of(10, 2))
+);
+
+Type itemsListType = Types.ListType.ofOptional(1, itemType);
+
+// Map of string to list
+Type tagsType = Types.MapType.ofOptional(
+    1, 2,
+    Types.StringType.get(),
+    Types.ListType.ofOptional(3, Types.StringType.get())
+);
+
+Schema orderSchema = new Schema(
+    required(1, "order_id", Types.LongType.get()),
+    optional(2, "items", itemsListType),
+    optional(3, "tags", tagsType)
+);
+```
+
+### Working with Field Defaults
+
+```java
+import org.apache.iceberg.expressions.Literal;
+import org.apache.iceberg.expressions.Expressions;
+
+NestedField field = NestedField.builder()
+    .withId(1)
+    .withName("status")
+    .ofType(Types.StringType.get())
+    .asOptional()
+    .withInitialDefault(Expressions.lit("pending"))
+    .withWriteDefault(Expressions.lit("active"))
+    .build();
+
+Object initialDefault = field.initialDefault(); // "pending"
+Object writeDefault = field.writeDefault();     // "active"
+```
+
+## See Also
+
+- [Schema](/api/schema) - Table schema definition
+- [Expressions](/api/expressions) - Expression and literal types
+- [Transforms](/api/transforms) - Partition transforms

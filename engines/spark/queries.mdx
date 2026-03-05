@@ -1,0 +1,401 @@
+---
+title: 'Querying with Spark'
+description: 'Read and query Iceberg tables using Apache Spark SQL and DataFrames'
+---
+
+## Overview
+
+To query Iceberg tables in Spark, first configure [Spark catalogs](/engines/spark/configuration). Iceberg uses Apache Spark's DataSourceV2 API for data source implementations.
+
+## Querying with SQL
+
+In Spark, tables use identifiers that include a catalog name:
+
+```sql
+SELECT * FROM prod.db.table; 
+-- catalog: prod, namespace: db, table: table
+```
+
+### Metadata Tables
+
+Metadata tables use the Iceberg table name as a namespace:
+
+```sql
+SELECT * FROM prod.db.table.files;
+SELECT * FROM prod.db.table.snapshots;
+SELECT * FROM prod.db.table.history;
+```
+
+## Time Travel
+
+Spark supports time travel queries using `TIMESTAMP AS OF` or `VERSION AS OF` clauses:
+
+<CodeGroup>
+```sql Timestamp Travel
+-- Time travel to specific timestamp
+SELECT * FROM prod.db.table 
+TIMESTAMP AS OF '1986-10-26 01:21:00';
+
+-- Using FOR SYSTEM_TIME AS OF
+SELECT * FROM prod.db.table 
+FOR SYSTEM_TIME AS OF '1986-10-26 01:21:00';
+
+-- Using Unix timestamp (in seconds)
+SELECT * FROM prod.db.table 
+TIMESTAMP AS OF 499162860;
+```
+
+```sql Snapshot Travel
+-- Time travel to snapshot ID
+SELECT * FROM prod.db.table 
+VERSION AS OF 10963874102873;
+
+-- Using FOR SYSTEM_VERSION AS OF
+SELECT * FROM prod.db.table 
+FOR SYSTEM_VERSION AS OF 10963874102873;
+```
+
+```sql Branch/Tag Travel
+-- Time travel to branch
+SELECT * FROM prod.db.table 
+VERSION AS OF 'audit-branch';
+
+SELECT * FROM prod.db.table.`branch_audit-branch`;
+
+-- Time travel to tag
+SELECT * FROM prod.db.table 
+VERSION AS OF 'historical-snapshot';
+
+SELECT * FROM prod.db.table.`tag_historical-snapshot`;
+```
+</CodeGroup>
+
+<Warning>
+If a branch/tag name matches a snapshot ID, the snapshot ID takes precedence. Rename branches/tags with a prefix like `snapshot-1` to avoid conflicts.
+</Warning>
+
+### Schema Selection in Time Travel
+
+Different time travel queries use different schemas:
+
+| Query Type | Schema Used | Example |
+|------------|-------------|----------|
+| Timestamp | Snapshot's schema | `TIMESTAMP AS OF '2025-01-01 10:00:00'` |
+| Snapshot ID | Snapshot's schema | `VERSION AS OF 101` |
+| Branch | **Table's current schema** | `VERSION AS OF 'audit-branch'` |
+| Tag | Snapshot's schema | `VERSION AS OF 'historical-tag'` |
+
+<Info>
+Branches use the table's current schema, while tags use the snapshot's schema at the time the tag was created.
+</Info>
+
+## Querying with DataFrames
+
+Load tables as DataFrames using `spark.table`:
+
+```scala
+val df = spark.table("prod.db.table")
+```
+
+### Loading with Paths
+
+You can load tables using different identifier formats:
+
+```scala
+// File path (HadoopTable)
+spark.read.format("iceberg").load("file:///path/to/table")
+
+// Table name in current catalog
+spark.read.format("iceberg").load("tablename")
+
+// Catalog and table
+spark.read.format("iceberg").load("catalog.tablename")
+
+// Full path
+spark.read.format("iceberg").load("catalog.namespace.tablename")
+```
+
+### Time Travel with DataFrames
+
+Use read options for time travel:
+
+<CodeGroup>
+```scala Timestamp
+spark.read
+    .option("as-of-timestamp", "499162860000")
+    .format("iceberg")
+    .load("path/to/table")
+```
+
+```scala Snapshot ID
+spark.read
+    .option("snapshot-id", 10963874102873L)
+    .format("iceberg")
+    .load("path/to/table")
+```
+
+```scala Branch
+import org.apache.iceberg.spark.SparkReadOptions
+
+spark.read
+    .option(SparkReadOptions.BRANCH, "audit-branch")
+    .format("iceberg")
+    .load("path/to/table")
+```
+
+```scala Tag
+import org.apache.iceberg.spark.SparkReadOptions
+
+spark.read
+    .option(SparkReadOptions.TAG, "historical-snapshot")
+    .format("iceberg")
+    .load("path/to/table")
+```
+</CodeGroup>
+
+### Incremental Read
+
+Read changes between snapshots:
+
+```scala
+// Get data added after start snapshot until end snapshot
+spark.read
+  .format("iceberg")
+  .option("start-snapshot-id", "10963874102873")
+  .option("end-snapshot-id", "63874143573109")
+  .load("path/to/table")
+```
+
+<Warning>
+Incremental reads only work with `append` operations. They cannot handle `replace`, `overwrite`, or `delete` operations. Incremental read is not supported in SQL syntax.
+</Warning>
+
+## Inspecting Tables
+
+Iceberg provides metadata tables to inspect table state.
+
+### History
+
+View table history with snapshot lineage:
+
+```sql
+SELECT * FROM prod.db.table.history;
+```
+
+<CodeGroup>
+```text Output
++-------------------------+---------------------+-----------+---------------------+
+| made_current_at         | snapshot_id         | parent_id | is_current_ancestor |
++-------------------------+---------------------+-----------+---------------------+
+| 2019-02-08 03:29:51.215 | 5781947118336215154 | NULL      | true                |
+| 2019-02-08 03:47:55.948 | 5179299526185056830 | ...       | true                |
+| 2019-02-09 16:24:30.13  | 296410040247533544  | ...       | false               |
++-------------------------+---------------------+-----------+---------------------+
+```
+</CodeGroup>
+
+<Info>
+Rows with `is_current_ancestor = false` indicate rolled-back commits.
+</Info>
+
+### Snapshots
+
+View all snapshots in the table:
+
+```sql
+SELECT * FROM prod.db.table.snapshots;
+```
+
+<CodeGroup>
+```sql Join with History
+SELECT
+    h.made_current_at,
+    s.operation,
+    h.snapshot_id,
+    h.is_current_ancestor,
+    s.summary['spark.app.id']
+FROM prod.db.table.history h
+JOIN prod.db.table.snapshots s
+  ON h.snapshot_id = s.snapshot_id
+ORDER BY made_current_at;
+```
+</CodeGroup>
+
+### Files
+
+View current data and delete files:
+
+<CodeGroup>
+```sql Current Files
+SELECT * FROM prod.db.table.files;
+```
+
+```sql Data Files Only
+SELECT * FROM prod.db.table.data_files;
+```
+
+```sql Delete Files Only
+SELECT * FROM prod.db.table.delete_files;
+```
+
+```sql All Files (All Snapshots)
+SELECT * FROM prod.db.table.all_files;
+```
+</CodeGroup>
+
+**Content Types:**
+- `0` - Data files
+- `1` - Position delete files
+- `2` - Equality delete files
+
+### Manifests
+
+View manifest files:
+
+```sql
+SELECT * FROM prod.db.table.manifests;
+```
+
+### Partitions
+
+View current partitions with statistics:
+
+```sql
+SELECT * FROM prod.db.table.partitions;
+```
+
+<CodeGroup>
+```text Output
++----------------+---------+--------------+------------+-------------------------------+
+| partition      | spec_id | record_count | file_count | total_data_file_size_in_bytes |
++----------------+---------+--------------+------------+-------------------------------+
+| {20211001, 11} | 0       | 1            | 1          | 100                           |
+| {20211002, 11} | 0       | 4            | 3          | 500                           |
++----------------+---------+--------------+------------+-------------------------------+
+```
+</CodeGroup>
+
+<Warning>
+The partitions table shows partitions with data or delete files in the current snapshot. Delete files are not applied, so some partitions may appear even if all rows are deleted.
+</Warning>
+
+### Entries
+
+View manifest entries with file metadata:
+
+```sql
+SELECT * FROM prod.db.table.entries;
+```
+
+### Position Delete Files
+
+View position delete records:
+
+```sql
+SELECT * FROM prod.db.table.position_deletes;
+```
+
+### References
+
+View branches and tags:
+
+```sql
+SELECT * FROM prod.db.table.refs;
+```
+
+<CodeGroup>
+```text Output
++------+--------+---------------------+-------------------------+
+| name | type   | snapshot_id         | max_reference_age_in_ms |
++------+--------+---------------------+-------------------------+
+| main | BRANCH | 4686954189838128572 | 10                      |
+| tag1 | TAG    | 4686954189838128572 | 10                      |
++------+--------+---------------------+-------------------------+
+```
+</CodeGroup>
+
+### Metadata Log Entries
+
+View metadata file history:
+
+```sql
+SELECT * FROM prod.db.table.metadata_log_entries;
+```
+
+## Metadata Tables with DataFrames
+
+Load metadata tables using the DataFrame API:
+
+<CodeGroup>
+```scala Named Table
+spark.read.format("iceberg").load("db.table.files")
+```
+
+```scala Hadoop Path
+spark.read.format("iceberg")
+    .load("hdfs://nn:8020/path/to/table#files")
+```
+</CodeGroup>
+
+## Time Travel with Metadata Tables
+
+Inspect metadata at specific points in time:
+
+<CodeGroup>
+```sql Timestamp
+SELECT * FROM prod.db.table.manifests 
+TIMESTAMP AS OF '2021-09-20 08:00:00';
+```
+
+```sql Snapshot ID
+SELECT * FROM prod.db.table.partitions 
+VERSION AS OF 10963874102873;
+```
+
+```scala DataFrame API
+spark.read
+    .format("iceberg")
+    .option("snapshot-id", 10963874102873L)
+    .load("db.table.files")
+```
+</CodeGroup>
+
+## All Metadata Tables
+
+Metadata tables prefixed with `all_` show data across **all snapshots**:
+
+<Warning>
+The "all" metadata tables may produce more than one row per file because files can be part of multiple snapshots.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="all_data_files" icon="file">
+    All data files across all snapshots
+  </Card>
+  <Card title="all_delete_files" icon="trash">
+    All delete files across all snapshots
+  </Card>
+  <Card title="all_entries" icon="list">
+    All manifest entries across all snapshots
+  </Card>
+  <Card title="all_manifests" icon="folder">
+    All manifest files across all snapshots
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Write Data" icon="pen" href="/engines/spark/writes">
+    Learn about INSERT, MERGE, and UPDATE operations
+  </Card>
+  <Card title="Procedures" icon="gears" href="/engines/spark/procedures">
+    Maintain tables with stored procedures
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/engines/spark/configuration">
+    Configure read options and performance tuning
+  </Card>
+  <Card title="Structured Streaming" icon="water" href="/engines/spark/structured-streaming">
+    Stream data with Spark Structured Streaming
+  </Card>
+</CardGroup>

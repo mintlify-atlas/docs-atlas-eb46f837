@@ -1,0 +1,436 @@
+---
+title: AWS S3 Storage
+description: Configure Apache Iceberg with Amazon S3 storage including S3FileIO, encryption, access control, and performance optimization
+---
+
+## Overview
+
+Apache Iceberg provides first-class support for Amazon S3 through the `iceberg-aws` module. The `S3FileIO` implementation offers optimized performance, security features, and seamless integration with AWS services.
+
+## Enabling AWS Integration
+
+The `iceberg-aws` module is bundled with Spark and Flink runtimes from version 0.11.0+. You'll need to provide AWS SDK v2 dependencies separately.
+
+### Spark Example
+
+```shell
+spark-sql \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{icebergVersion},org.apache.iceberg:iceberg-aws-bundle:{icebergVersion} \
+  --conf spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.my_catalog.warehouse=s3://my-bucket/warehouse \
+  --conf spark.sql.catalog.my_catalog.catalog-impl=org.apache.iceberg.aws.glue.GlueCatalog \
+  --conf spark.sql.catalog.my_catalog.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+```
+
+### Flink Example
+
+```sql
+CREATE CATALOG my_catalog WITH (
+  'type' = 'iceberg',
+  'warehouse' = 's3://my-bucket/warehouse',
+  'catalog-type' = 'glue',
+  'io-impl' = 'org.apache.iceberg.aws.s3.S3FileIO'
+);
+```
+
+## S3FileIO Features
+
+### Progressive Multipart Upload
+
+`S3FileIO` uses an optimized multipart upload algorithm that:
+
+- Uploads parts in parallel as soon as they're ready
+- Deletes local parts immediately after upload
+- Maximizes upload speed and minimizes disk usage
+
+#### Configuration
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `s3.multipart.num-threads` | Available processors | Threads for parallel uploads |
+| `s3.multipart.part-size-bytes` | 32MB | Size of each upload part |
+| `s3.multipart.threshold` | 1.5 | Threshold (× part size) to use multipart |
+| `s3.staging-dir` | `java.io.tmpdir` | Directory for temporary files |
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.multipart.num-threads=16 \
+  --conf spark.sql.catalog.my_catalog.s3.multipart.part-size-bytes=67108864
+```
+
+## Server-Side Encryption
+
+### SSE-S3 (Amazon S3-Managed Keys)
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.sse.type=s3
+```
+
+Each object is encrypted with a unique key using AES-256 encryption.
+
+### SSE-KMS (AWS KMS-Managed Keys)
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.sse.type=kms \
+  --conf spark.sql.catalog.my_catalog.s3.sse.key=arn:aws:kms:us-west-2:123456789012:key/12345678-1234-1234-1234-123456789012
+```
+
+Provides additional audit trails and key rotation.
+
+### DSSE-KMS (Dual-layer Encryption)
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.sse.type=dsse-kms \
+  --conf spark.sql.catalog.my_catalog.s3.sse.key=arn:aws:kms:us-west-2:123456789012:key/12345678-1234-1234-1234-123456789012
+```
+
+Applies two layers of encryption for compliance requirements.
+
+### SSE-C (Customer-Provided Keys)
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.sse.type=custom \
+  --conf spark.sql.catalog.my_catalog.s3.sse.key=<base64-AES256-key> \
+  --conf spark.sql.catalog.my_catalog.s3.sse.md5=<base64-md5-digest>
+```
+
+You manage encryption keys; S3 manages encryption/decryption.
+
+## Object Store Location Provider
+
+Traditional Hive-style layouts can cause S3 throttling due to all files being under the same prefix. The `ObjectStoreLocationProvider` distributes files across multiple prefixes.
+
+### Enable Object Storage Layout
+
+```sql
+CREATE TABLE my_catalog.db.events (
+  id bigint,
+  event_type string,
+  timestamp timestamp,
+  data string
+)
+USING iceberg
+OPTIONS (
+  'write.object-storage.enabled' = 'true',
+  'write.data.path' = 's3://my-bucket/data'
+)
+PARTITIONED BY (days(timestamp));
+```
+
+### How It Works
+
+Files are written with a 20-bit hash distributed across directories:
+
+```
+s3://my-bucket/data/0101/0110/1001/10110010/day=2024-03-15/00000-0-abc123.parquet
+                     ^^^^ ^^^^ ^^^^ ^^^^^^^^
+                     4-bit directories (3 levels) + final 8-bit
+```
+
+This ensures even distribution across S3 bucket prefixes for optimal throughput.
+
+### Omit Partition Paths
+
+```sql
+CREATE TABLE my_catalog.db.events (
+  id bigint,
+  category string
+)
+USING iceberg
+OPTIONS (
+  'write.object-storage.enabled' = 'true',
+  'write.object-storage.partitioned-paths' = 'false'
+)
+PARTITIONED BY (category);
+```
+
+Results in:
+```
+s3://my-bucket/data/1101/0100/1011/00111010-00000-0-abc123.parquet
+```
+
+## S3 Access Control
+
+### Access Control Lists (ACL)
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.acl=bucket-owner-full-control
+```
+
+Valid values: `private`, `public-read`, `public-read-write`, `authenticated-read`, `bucket-owner-read`, `bucket-owner-full-control`
+
+### S3 Tags
+
+#### Write Tags
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.write.tags.team=analytics \
+  --conf spark.sql.catalog.my_catalog.s3.write.tags.env=production
+```
+
+All objects will be tagged with `team=analytics` and `env=production`.
+
+#### Delete Tags
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.delete-enabled=false \
+  --conf spark.sql.catalog.my_catalog.s3.delete.tags.status=deleted \
+  --conf spark.sql.catalog.my_catalog.s3.delete.num-threads=10
+```
+
+Objects are tagged before deletion, enabling lifecycle policies to handle cleanup.
+
+#### Auto-tag with Table/Namespace
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.write.table-tag-enabled=true \
+  --conf spark.sql.catalog.my_catalog.s3.write.namespace-tag-enabled=true
+```
+
+Objects tagged with `iceberg.table=<table-name>` and `iceberg.namespace=<namespace>`.
+
+## Performance Optimization
+
+### S3 Retries
+
+For high-throughput workloads encountering throttling:
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.retry.num-retries=32 \
+  --conf spark.sql.catalog.my_catalog.s3.retry.min-wait-ms=2000 \
+  --conf spark.sql.catalog.my_catalog.s3.retry.max-wait-ms=20000
+```
+
+<Note>
+Setting retries to 32 allows time for S3 to auto-scale capacity.
+</Note>
+
+### Write Checksum Verification
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.checksum-enabled=true
+```
+
+Enables integrity checks for uploads (adds overhead).
+
+## Advanced Features
+
+### S3 Access Points
+
+Use access points for multi-region or cross-region access:
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.access-points.my-bucket=arn:aws:s3:us-west-2:123456789:accesspoint/my-ap \
+  --conf spark.sql.catalog.my_catalog.s3.use-arn-region-enabled=true
+```
+
+### S3 Access Grants
+
+Use IAM principals for fine-grained access:
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.access-grants.enabled=true \
+  --conf spark.sql.catalog.my_catalog.s3.access-grants.fallback-to-iam=true
+```
+
+Requires [S3 Access Grants Plugin](https://github.com/aws/aws-s3-accessgrants-plugin-java-v2) in classpath.
+
+### Transfer Acceleration
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.acceleration-enabled=true
+```
+
+Speed up transfers by 50-500% for long-distance, large object transfers.
+
+### Analytics Accelerator
+
+Use the [Analytics Accelerator Library](https://github.com/awslabs/analytics-accelerator-s3) for improved performance:
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.analytics-accelerator.enabled=true \
+  --conf spark.sql.catalog.my_catalog.s3.crt.enabled=true \
+  --conf spark.sql.catalog.my_catalog.s3.crt.max-concurrency=500
+```
+
+#### Key Configuration
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `s3.analytics-accelerator.enabled` | `false` | Enable accelerator |
+| `s3.crt.enabled` | `true` | Use CRT client |
+| `s3.crt.max-concurrency` | `500` | Max concurrent requests |
+| `s3.analytics-accelerator.physicalio.blocksizebytes` | `8MB` | Block size |
+| `s3.analytics-accelerator.logicalio.prefetch.footer.enabled` | `true` | Prefetch Parquet footers |
+
+### Cross-Region Access
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.cross-region-access-enabled=true
+```
+
+Allows access to buckets in different regions (adds latency to first request).
+
+### Dual-stack (IPv6) Endpoints
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.s3.dualstack-enabled=true
+```
+
+Resolves to IPv6 when available, falls back to IPv4.
+
+## AWS Client Customization
+
+### AssumeRole for Cross-Account Access
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.client.factory=org.apache.iceberg.aws.AssumeRoleAwsClientFactory \
+  --conf spark.sql.catalog.my_catalog.client.assume-role.arn=arn:aws:iam::123456789:role/IcebergRole \
+  --conf spark.sql.catalog.my_catalog.client.assume-role.region=us-west-2 \
+  --conf spark.sql.catalog.my_catalog.client.assume-role.external-id=my-external-id \
+  --conf spark.sql.catalog.my_catalog.client.assume-role.timeout-sec=3600
+```
+
+### Custom Client Factory
+
+Implement `org.apache.iceberg.aws.AwsClientFactory`:
+
+```java
+public class CustomAwsClientFactory implements AwsClientFactory {
+  @Override
+  public S3Client s3() {
+    return S3Client.builder()
+      .credentialsProvider(customCredentialsProvider())
+      .region(Region.US_WEST_2)
+      .httpClient(ApacheHttpClient.builder()
+        .maxConnections(100)
+        .build())
+      .build();
+  }
+  
+  // Implement other methods...
+}
+```
+
+Then configure:
+
+```shell
+--conf spark.sql.catalog.my_catalog.client.factory=com.example.CustomAwsClientFactory
+```
+
+## Migration from S3A
+
+<Warning>
+**S3FileIO is recommended** over `HadoopFileIO` with S3A for better performance and AWS integration.
+</Warning>
+
+`S3FileIO` can read paths written by S3A (`s3a://` and `s3n://` schemes), making migration seamless.
+
+If you must use S3A:
+
+1. Set warehouse to `s3a://my-bucket/warehouse`
+2. Add `hadoop-aws` dependency
+3. Configure Hadoop properties:
+
+```shell
+--conf spark.hadoop.fs.s3a.access.key=... \
+--conf spark.hadoop.fs.s3a.secret.key=... \
+--conf spark.hadoop.fs.s3a.endpoint=s3.us-west-2.amazonaws.com
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use Object Storage Layout">
+    Enable `write.object-storage.enabled=true` to avoid S3 throttling from hot prefixes.
+  </Accordion>
+  
+  <Accordion title="Enable Retry for High Throughput">
+    Set `s3.retry.num-retries=32` for workloads that may trigger S3 auto-scaling.
+  </Accordion>
+  
+  <Accordion title="Use SSE-KMS for Compliance">
+    KMS provides audit trails and key rotation required by many compliance frameworks.
+  </Accordion>
+  
+  <Accordion title="Tag Objects for Lifecycle">
+    Use `s3.delete.tags` with lifecycle policies instead of hard deletes for cost optimization.
+  </Accordion>
+  
+  <Accordion title="Share write.data.path Across Tables">
+    Use a common `write.data.path` to maximize prefix distribution benefits.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Throttling Errors
+
+```
+SlowDown: Please reduce your request rate
+```
+
+**Solutions:**
+- Enable object storage layout
+- Increase retry count
+- Reduce parallelism temporarily
+- Contact AWS to increase partition count
+
+### Access Denied
+
+```
+Access Denied (Service: S3, Status Code: 403)
+```
+
+**Check:**
+- IAM permissions (GetObject, PutObject, DeleteObject, ListBucket)
+- Bucket policy
+- S3 Access Points configuration
+- Encryption key access (for SSE-KMS)
+
+### Connection Timeout
+
+```
+Unable to execute HTTP request: connect timed out
+```
+
+**Solutions:**
+- Check network connectivity
+- Verify VPC endpoints (if using)
+- Increase timeout:
+  ```shell
+  --conf spark.sql.catalog.my_catalog.s3.connection-timeout-ms=60000
+  ```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Glue Catalog" icon="aws" href="/catalogs/glue">
+    Configure AWS Glue catalog for metadata
+  </Card>
+  
+  <Card title="Dell ECS Storage" icon="server" href="/storage/dell">
+    Use Dell Enterprise Cloud Storage
+  </Card>
+  
+  <Card title="Custom FileIO" icon="code" href="/storage/fileio">
+    Implement custom storage backends
+  </Card>
+</CardGroup>

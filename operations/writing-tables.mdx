@@ -1,0 +1,510 @@
+---
+title: Writing Tables
+description: Learn how to write data to Apache Iceberg tables using append, overwrite, and row-level operations
+---
+
+Iceberg provides flexible APIs for writing data to tables, supporting atomic operations, transactions, and row-level modifications. This guide covers all write operations from simple appends to complex row-level deltas.
+
+## Appending Data
+
+The most common write operation is appending new data files to a table.
+
+### Basic Append
+
+```java
+Table table = ...; // Load your table
+
+// Create append operation
+AppendFiles append = table.newAppend();
+
+// Add data files
+DataFile dataFile = DataFiles.builder(table.spec())
+    .withPath("/path/to/data-file.parquet")
+    .withFileSizeInBytes(1024 * 1024 * 100) // 100 MB
+    .withRecordCount(1000000)
+    .build();
+
+append.appendFile(dataFile);
+
+// Commit the append
+append.commit();
+```
+
+### Fast Append
+
+For streaming workloads with frequent small appends, use fast append to reduce commit overhead:
+
+```java
+AppendFiles fastAppend = table.newFastAppend();
+fastAppend.appendFile(dataFile);
+fastAppend.commit();
+```
+
+<Warning>
+Fast appends skip manifest compaction, which can slow down scan planning over time. Use regular appends for batch workloads.
+</Warning>
+
+### Append Multiple Files
+
+```java
+AppendFiles append = table.newAppend();
+
+for (DataFile file : dataFiles) {
+  append.appendFile(file);
+}
+
+append.commit();
+```
+
+### Append Manifest Files
+
+Directly append pre-built manifest files:
+
+```java
+ManifestFile manifest = ...;
+
+AppendFiles append = table.newAppend();
+append.appendManifest(manifest);
+append.commit();
+```
+
+<Note>
+Appending manifests is efficient for bulk imports and can significantly reduce commit time for large datasets.
+</Note>
+
+## Overwriting Data
+
+Overwrite operations replace data matching specific criteria.
+
+### Dynamic Overwrite by Filter
+
+Overwrite all data matching a row filter:
+
+```java
+import static org.apache.iceberg.expressions.Expressions.*;
+
+OverwriteFiles overwrite = table.newOverwrite();
+
+// Define which data to replace
+overwrite.overwriteByRowFilter(equal("date", "2024-01-01"));
+
+// Add new files
+for (DataFile file : newDataFiles) {
+  overwrite.addFile(file);
+}
+
+overwrite.commit();
+```
+
+### Explicit File Overwrite
+
+Delete specific files and add new ones:
+
+```java
+OverwriteFiles overwrite = table.newOverwrite();
+
+// Remove old files
+for (DataFile oldFile : filesToReplace) {
+  overwrite.deleteFile(oldFile);
+}
+
+// Add new files
+for (DataFile newFile : replacementFiles) {
+  overwrite.addFile(newFile);
+}
+
+overwrite.commit();
+```
+
+### Validated Overwrite
+
+Ensure idempotent overwrites with validation:
+
+```java
+OverwriteFiles overwrite = table.newOverwrite()
+    .overwriteByRowFilter(equal("date", "2024-01-01"))
+    .validateAddedFilesMatchOverwriteFilter(); // Ensure new files match filter
+
+for (DataFile file : newFiles) {
+  overwrite.addFile(file);
+}
+
+overwrite.commit();
+```
+
+### Conflict Detection
+
+Detect and handle concurrent modifications:
+
+```java
+long startSnapshot = table.currentSnapshot().snapshotId();
+
+// Read data and compute changes
+// ...
+
+OverwriteFiles overwrite = table.newOverwrite()
+    .overwriteByRowFilter(equal("partition", "2024-01"))
+    .validateFromSnapshot(startSnapshot)
+    .conflictDetectionFilter(equal("partition", "2024-01"))
+    .validateNoConflictingData()
+    .validateNoConflictingDeletes();
+
+// Apply changes
+for (DataFile file : outputFiles) {
+  overwrite.addFile(file);
+}
+
+try {
+  overwrite.commit();
+} catch (ValidationException e) {
+  // Handle concurrent modification
+  System.err.println("Concurrent modification detected: " + e.getMessage());
+}
+```
+
+<Note>
+Conflict detection is essential for non-idempotent operations like UPDATE and DELETE to maintain data consistency.
+</Note>
+
+## Deleting Data
+
+### Delete Files by Path
+
+```java
+DeleteFiles delete = table.newDelete();
+
+// Delete specific files
+delete.deleteFile("/path/to/file1.parquet");
+delete.deleteFile("/path/to/file2.parquet");
+
+delete.commit();
+```
+
+### Delete by DataFile
+
+```java
+DeleteFiles delete = table.newDelete();
+
+for (DataFile file : filesToDelete) {
+  delete.deleteFile(file);
+}
+
+delete.commit();
+```
+
+### Delete by Row Filter
+
+Delete all files where all rows match a filter:
+
+```java
+import static org.apache.iceberg.expressions.Expressions.*;
+
+DeleteFiles delete = table.newDelete()
+    .deleteFromRowFilter(equal("date", "2023-01-01"));
+
+delete.commit();
+```
+
+<Warning>
+Row filter deletes only work when the filter matches entire files. If a file contains both matching and non-matching rows, the operation will fail with a ValidationException.
+</Warning>
+
+### Validate Files Exist
+
+```java
+DeleteFiles delete = table.newDelete()
+    .deleteFile(dataFile)
+    .validateFilesExist(); // Ensure files still exist at commit time
+
+delete.commit();
+```
+
+## Row-Level Changes
+
+Row delta operations enable fine-grained updates and deletes using delete files.
+
+### Simple Row Delta
+
+```java
+RowDelta rowDelta = table.newRowDelta();
+
+// Add new data
+rowDelta.addRows(newDataFile);
+
+// Add delete file (position or equality deletes)
+rowDelta.addDeletes(deleteFile);
+
+rowDelta.commit();
+```
+
+### Update Operation (Copy-on-Write)
+
+```java
+// Read existing data, apply updates, write new files
+DataFile updatedFile = ...; // Contains updated rows
+DataFile originalFile = ...; // Original file being replaced
+
+RowDelta rowDelta = table.newRowDelta();
+rowDelta.addRows(updatedFile);     // New version of data
+rowDelta.removeRows(originalFile);  // Remove old version
+rowDelta.commit();
+```
+
+### Update with Equality Deletes (Merge-on-Read)
+
+```java
+// Write equality delete file marking rows for deletion
+DeleteFile equalityDeletes = ...; // Delete rows where id IN (1, 2, 3)
+
+// Write new data with updated values
+DataFile updatedRows = ...; // Contains new versions of rows 1, 2, 3
+
+RowDelta rowDelta = table.newRowDelta();
+rowDelta.addDeletes(equalityDeletes); // Mark old rows deleted
+rowDelta.addRows(updatedRows);        // Insert updated rows
+rowDelta.commit();
+```
+
+### Position Deletes
+
+```java
+// Position delete file references specific row positions
+DeleteFile positionDeletes = ...; // Delete rows at positions [100, 250, 300] in file X
+
+RowDelta rowDelta = table.newRowDelta();
+rowDelta.addDeletes(positionDeletes);
+rowDelta.commit();
+```
+
+### Validated Row Delta
+
+Ensure concurrent operations don't conflict:
+
+```java
+long startSnapshot = table.currentSnapshot().snapshotId();
+
+// Read and process data
+List<CharSequence> referencedFiles = Arrays.asList(
+    "/path/to/file1.parquet",
+    "/path/to/file2.parquet"
+);
+
+RowDelta rowDelta = table.newRowDelta()
+    .validateFromSnapshot(startSnapshot)
+    .validateDataFilesExist(referencedFiles) // Files referenced by deletes must exist
+    .validateDeletedFiles()                   // Fail if files are deleted concurrently
+    .conflictDetectionFilter(equal("partition", "2024-01"))
+    .validateNoConflictingDataFiles()
+    .validateNoConflictingDeleteFiles();
+
+rowDelta.addDeletes(positionDeleteFile);
+rowDelta.commit();
+```
+
+## Transactions
+
+Group multiple operations into an atomic transaction.
+
+### Basic Transaction
+
+```java
+Transaction txn = table.newTransaction();
+
+// Update schema
+txn.updateSchema()
+    .addColumn("new_column", Types.StringType.get())
+    .commit();
+
+// Append data
+AppendFiles append = txn.newAppend();
+append.appendFile(dataFile);
+append.commit();
+
+// Commit entire transaction
+txn.commitTransaction();
+```
+
+### Multi-Operation Transaction
+
+```java
+Transaction txn = table.newTransaction();
+
+// Delete old data
+DeleteFiles delete = txn.newDelete();
+delete.deleteFromRowFilter(lessThan("timestamp", cutoffTime));
+delete.commit();
+
+// Append new data
+AppendFiles append = txn.newAppend();
+for (DataFile file : newFiles) {
+  append.appendFile(file);
+}
+append.commit();
+
+// Update properties
+txn.updateProperties()
+    .set("write.metadata.previous-versions-max", "50")
+    .commit();
+
+// All changes are atomic
+txn.commitTransaction();
+```
+
+<Note>
+Transactions ensure all operations succeed or fail together, maintaining table consistency.
+</Note>
+
+### Replace Partitions
+
+Dynamically overwrite partitions (legacy operation):
+
+```java
+ReplacePartitions replacePartitions = table.newReplacePartitions();
+
+for (DataFile file : newPartitionFiles) {
+  replacePartitions.addFile(file);
+}
+
+replacePartitions.commit();
+```
+
+<Warning>
+ReplacePartitions is a legacy API. Use OverwriteFiles with `overwriteByRowFilter()` for better control and safety.
+</Warning>
+
+## Complete Examples
+
+<CodeGroup>
+
+```java Batch Append
+import org.apache.iceberg.*;
+import org.apache.iceberg.catalog.*;
+import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.GenericRecord;
+import org.apache.iceberg.data.Record;
+import org.apache.iceberg.io.OutputFile;
+import org.apache.iceberg.io.DataWriter;
+import java.util.List;
+
+public class BatchAppendExample {
+  public void appendData(Table table, List<Record> records) throws Exception {
+    // Get output location
+    OutputFile outputFile = table.io().newOutputFile(
+        table.locationProvider().newDataLocation("data-" + System.currentTimeMillis())
+    );
+    
+    // Write data file
+    GenericAppenderFactory appenderFactory = new GenericAppenderFactory(
+        table.schema(),
+        table.spec()
+    );
+    
+    DataWriter<Record> writer = appenderFactory.newDataWriter(
+        outputFile,
+        table.spec(),
+        null // partition data
+    );
+    
+    try {
+      for (Record record : records) {
+        writer.write(record);
+      }
+    } finally {
+      writer.close();
+    }
+    
+    // Commit append
+    DataFile dataFile = writer.toDataFile();
+    table.newAppend()
+        .appendFile(dataFile)
+        .commit();
+  }
+}
+```
+
+```java Partition Overwrite
+import org.apache.iceberg.*;
+import static org.apache.iceberg.expressions.Expressions.*;
+
+public class PartitionOverwriteExample {
+  public void overwritePartition(
+      Table table,
+      String partitionDate,
+      List<DataFile> newFiles
+  ) {
+    OverwriteFiles overwrite = table.newOverwrite();
+    
+    // Replace all data for this partition
+    overwrite.overwriteByRowFilter(equal("date", partitionDate));
+    
+    // Ensure new files are for the same partition
+    overwrite.validateAddedFilesMatchOverwriteFilter();
+    
+    // Add new files
+    for (DataFile file : newFiles) {
+      overwrite.addFile(file);
+    }
+    
+    // Commit
+    overwrite.commit();
+    
+    System.out.println("Overwritten partition: " + partitionDate);
+  }
+}
+```
+
+```java UPSERT Operation
+import org.apache.iceberg.*;
+import static org.apache.iceberg.expressions.Expressions.*;
+
+public class UpsertExample {
+  public void upsert(
+      Table table,
+      DataFile newRows,
+      DeleteFile equalityDeletes
+  ) {
+    long startSnapshot = table.currentSnapshot().snapshotId();
+    
+    RowDelta upsert = table.newRowDelta()
+        .validateFromSnapshot(startSnapshot)
+        .validateNoConflictingDataFiles()
+        .validateNoConflictingDeleteFiles();
+    
+    // Mark existing rows as deleted (equality deletes)
+    upsert.addDeletes(equalityDeletes);
+    
+    // Add new/updated rows
+    upsert.addRows(newRows);
+    
+    // Commit atomically
+    upsert.commit();
+  }
+}
+```
+
+</CodeGroup>
+
+## Write Properties
+
+Configure write behavior with table properties:
+
+```java
+table.updateProperties()
+    .set("write.format.default", "parquet")
+    .set("write.parquet.compression-codec", "zstd")
+    .set("write.target-file-size-bytes", "536870912") // 512 MB
+    .set("write.distribution-mode", "hash") // or "range", "none"
+    .set("write.metadata.delete-after-commit.enabled", "true")
+    .commit();
+```
+
+## Best Practices
+
+1. **Use transactions**: Group related operations for atomic commits
+2. **Batch appends**: Append multiple files in a single commit to reduce metadata overhead
+3. **Fast append for streaming**: Use `newFastAppend()` for high-frequency writes
+4. **Validate overwrites**: Use conflict detection for non-idempotent operations
+5. **Target file size**: Configure appropriate file sizes (256-512 MB) for optimal performance
+6. **Partition pruning**: Structure writes to align with common query patterns
+7. **Use row deltas for updates**: Leverage delete files for efficient row-level modifications
+8. **Monitor snapshot growth**: Regularly expire snapshots to prevent metadata bloat

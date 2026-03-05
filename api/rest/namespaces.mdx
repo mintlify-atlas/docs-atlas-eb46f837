@@ -1,0 +1,464 @@
+---
+title: Namespace Endpoints
+description: REST API endpoints for managing namespaces in Apache Iceberg catalogs
+---
+
+# Namespace API
+
+Namespace endpoints manage the hierarchical organization of tables and views in an Iceberg catalog.
+
+## List Namespaces
+
+List all namespaces at a certain level, optionally starting from a parent namespace.
+
+```http
+GET /v1/{prefix}/namespaces
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="parent" type="string" optional>
+  An optional namespace to list underneath. If not provided, all top-level namespaces are listed.
+  
+  For multi-part namespaces, parts must be separated by the namespace separator (default: `%1F`).
+  
+  **Example:** `accounting%1Ftax`
+</ParamField>
+
+<ParamField query="pageToken" type="string" optional>
+  Pagination token from a previous response
+</ParamField>
+
+<ParamField query="pageSize" type="integer" optional>
+  Maximum number of namespaces to return
+</ParamField>
+
+### Response
+
+<ResponseField name="namespaces" type="array" required>
+  List of namespace identifiers
+  
+  <Expandable title="items">
+    <ResponseField name="namespace" type="array">
+      Array of strings representing namespace parts
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="next-page-token" type="string" optional>
+  Token for fetching the next page of results. Null if no more results.
+</ResponseField>
+
+### Examples
+
+**List top-level namespaces:**
+
+```bash
+curl -X GET "https://catalog.example.com/v1/production/namespaces" \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "namespaces": [
+    ["accounting"],
+    ["engineering"],
+    ["sales"]
+  ]
+}
+```
+
+**List namespaces under a parent:**
+
+```bash
+curl -X GET "https://catalog.example.com/v1/production/namespaces?parent=accounting%1Ftax" \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "namespaces": [
+    ["accounting", "tax", "paid"],
+    ["accounting", "tax", "unpaid"]
+  ]
+}
+```
+
+---
+
+## Create Namespace
+
+Create a new namespace with optional properties.
+
+```http
+POST /v1/{prefix}/namespaces
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Request Body
+
+<ParamField body="namespace" type="array" required>
+  Array of strings representing the namespace to create
+  
+  **Example:** `["accounting", "tax"]`
+</ParamField>
+
+<ParamField body="properties" type="object" optional>
+  String-to-string map of namespace properties
+  
+  **Example:** `{"owner": "finance-team"}`
+</ParamField>
+
+### Response
+
+<ResponseField name="namespace" type="array" required>
+  The created namespace identifier
+</ResponseField>
+
+<ResponseField name="properties" type="object">
+  Properties of the created namespace (may include server-added properties)
+</ResponseField>
+
+### Examples
+
+```bash
+curl -X POST "https://catalog.example.com/v1/production/namespaces" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 017F22E2-79B0-7CC3-98C4-DC0C0C07398F" \
+  -d '{
+    "namespace": ["accounting", "tax"],
+    "properties": {
+      "owner": "finance-team",
+      "description": "Tax accounting tables"
+    }
+  }'
+```
+
+```json
+{
+  "namespace": ["accounting", "tax"],
+  "properties": {
+    "owner": "finance-team",
+    "description": "Tax accounting tables",
+    "last_modified_time": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+## Load Namespace Metadata
+
+Retrieve metadata properties for a namespace.
+
+```http
+GET /v1/{prefix}/namespaces/{namespace}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier. Multi-part namespaces use separator (default: `%1F`).
+  
+  **Examples:**
+  - `accounting` - Single-part namespace
+  - `accounting%1Ftax` - Multi-part namespace
+</ParamField>
+
+### Response
+
+<ResponseField name="namespace" type="array" required>
+  The namespace identifier
+</ResponseField>
+
+<ResponseField name="properties" type="object">
+  All stored metadata properties for the namespace
+</ResponseField>
+
+### Example
+
+```bash
+curl -X GET "https://catalog.example.com/v1/production/namespaces/accounting%1Ftax" \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "namespace": ["accounting", "tax"],
+  "properties": {
+    "owner": "finance-team",
+    "description": "Tax accounting tables",
+    "created_time": "2024-01-01T00:00:00Z",
+    "last_modified_time": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+---
+
+## Check Namespace Exists
+
+Check if a namespace exists without retrieving its metadata.
+
+```http
+HEAD /v1/{prefix}/namespaces/{namespace}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+### Response
+
+No response body. Status code indicates existence.
+
+### Example
+
+```bash
+curl -I "https://catalog.example.com/v1/production/namespaces/accounting" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Success:**
+```http
+HTTP/1.1 204 No Content
+```
+
+**Not Found:**
+```http
+HTTP/1.1 404 Not Found
+```
+
+---
+
+## Update Namespace Properties
+
+Set and/or remove properties on a namespace.
+
+```http
+POST /v1/{prefix}/namespaces/{namespace}/properties
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Request Body
+
+<ParamField body="removals" type="array" optional>
+  List of property keys to remove
+</ParamField>
+
+<ParamField body="updates" type="object" optional>
+  Map of property keys and values to set or update
+</ParamField>
+
+### Response
+
+<ResponseField name="updated" type="array" required>
+  List of property keys that were updated
+</ResponseField>
+
+<ResponseField name="removed" type="array" required>
+  List of property keys that were removed
+</ResponseField>
+
+<ResponseField name="missing" type="array" optional>
+  List of properties requested for removal that were not found
+</ResponseField>
+
+### Example
+
+```bash
+curl -X POST "https://catalog.example.com/v1/production/namespaces/accounting/properties" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "removals": ["department"],
+    "updates": {
+      "owner": "new-owner",
+      "description": "Updated description"
+    }
+  }'
+```
+
+```json
+{
+  "updated": ["owner", "description"],
+  "removed": ["department"],
+  "missing": []
+}
+```
+
+<Note>
+Properties not in the request are not modified. A key cannot appear in both `removals` and `updates`.
+</Note>
+
+---
+
+## Drop Namespace
+
+Delete a namespace from the catalog. The namespace must be empty.
+
+```http
+DELETE /v1/{prefix}/namespaces/{namespace}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier to delete
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Response
+
+No response body on success.
+
+### Example
+
+```bash
+curl -X DELETE "https://catalog.example.com/v1/production/namespaces/accounting%1Ftax" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Success:**
+```http
+HTTP/1.1 204 No Content
+```
+
+<Warning>
+The namespace must be empty (no tables or views). Otherwise, the request returns `409 Conflict`.
+</Warning>
+
+---
+
+## Status Codes
+
+### Success
+- `200 OK` - Request successful with response body
+- `204 No Content` - Request successful without response body
+
+### Client Errors
+- `400 Bad Request` - Invalid request format
+- `401 Unauthorized` - Authentication required
+- `403 Forbidden` - Not authorized
+- `404 Not Found` - Namespace does not exist
+- `406 Not Acceptable` - Server doesn't support namespace properties
+- `409 Conflict` - Namespace already exists or not empty
+- `419 Authentication Timeout` - Authentication expired
+- `422 Unprocessable Entity` - Property key in both removals and updates
+
+### Server Errors
+- `503 Service Unavailable` - Service temporarily unavailable
+- `5XX` - Other server errors
+
+## Common Use Cases
+
+### Create Hierarchical Namespace
+
+```bash
+# Create parent namespace
+curl -X POST ".../namespaces" \
+  -d '{"namespace": ["accounting"]}'
+
+# Create child namespace
+curl -X POST ".../namespaces" \
+  -d '{"namespace": ["accounting", "tax"]}'
+
+# Create grandchild namespace  
+curl -X POST ".../namespaces" \
+  -d '{"namespace": ["accounting", "tax", "2024"]}'
+```
+
+### List All Namespaces in Hierarchy
+
+```bash
+# List top-level
+curl -X GET ".../namespaces"
+# Returns: [["accounting"]]
+
+# List under accounting
+curl -X GET ".../namespaces?parent=accounting"
+# Returns: [["accounting", "tax"]]
+
+# List under accounting.tax
+curl -X GET ".../namespaces?parent=accounting%1Ftax"
+# Returns: [["accounting", "tax", "2024"]]
+```
+
+### Manage Namespace Lifecycle
+
+```bash
+# 1. Create with properties
+curl -X POST ".../namespaces" \
+  -d '{
+    "namespace": ["analytics"],
+    "properties": {"owner": "data-team"}
+  }'
+
+# 2. Update properties
+curl -X POST ".../namespaces/analytics/properties" \
+  -d '{"updates": {"description": "Analytics tables"}}'
+
+# 3. Check if exists
+curl -I ".../namespaces/analytics"
+
+# 4. Delete when empty
+curl -X DELETE ".../namespaces/analytics"
+```
+
+## Related
+
+- [Table Endpoints](/api/rest/tables) - Manage tables within namespaces
+- [View Endpoints](/api/rest/views) - Manage views within namespaces
+- [REST API Overview](/api/rest/overview) - API overview

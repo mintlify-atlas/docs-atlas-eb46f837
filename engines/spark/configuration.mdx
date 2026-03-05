@@ -1,0 +1,310 @@
+---
+title: 'Spark Configuration'
+description: 'Configure Apache Spark catalogs and runtime options for Iceberg'
+---
+
+## Catalogs
+
+Spark uses pluggable table catalogs configured via properties under `spark.sql.catalog`.
+
+### Catalog Types
+
+Iceberg provides two catalog implementations:
+
+| Implementation | Description | Use Case |
+|----------------|-------------|----------|
+| `SparkCatalog` | Dedicated Iceberg catalog | Hive Metastore or Hadoop warehouse |
+| `SparkSessionCatalog` | Adds Iceberg support to built-in catalog | Mixed Iceberg and non-Iceberg tables |
+
+### Hive Metastore Catalog
+
+Configure a Hive-based catalog:
+
+```properties
+spark.sql.catalog.hive_prod=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.hive_prod.type=hive
+spark.sql.catalog.hive_prod.uri=thrift://metastore-host:port
+# Omit uri to use hive.metastore.uris from hive-site.xml
+```
+
+### REST Catalog
+
+Configure a REST catalog:
+
+```properties
+spark.sql.catalog.rest_prod=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.rest_prod.type=rest
+spark.sql.catalog.rest_prod.uri=http://localhost:8080
+```
+
+### Hadoop Catalog
+
+Configure a directory-based catalog:
+
+```properties
+spark.sql.catalog.hadoop_prod=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.hadoop_prod.type=hadoop
+spark.sql.catalog.hadoop_prod.warehouse=hdfs://nn:8020/warehouse/path
+```
+
+## Catalog Configuration
+
+Common configuration properties:
+
+| Property | Values | Description |
+|----------|--------|-------------|
+| `spark.sql.catalog.<name>.type` | `hive`, `hadoop`, `rest`, `glue`, `jdbc`, `nessie` | Catalog implementation type |
+| `spark.sql.catalog.<name>.catalog-impl` | Class name | Custom catalog implementation |
+| `spark.sql.catalog.<name>.io-impl` | Class name | Custom FileIO implementation |
+| `spark.sql.catalog.<name>.warehouse` | Path | Warehouse directory base path |
+| `spark.sql.catalog.<name>.uri` | URI | Metastore URI (Hive) or REST URL |
+| `spark.sql.catalog.<name>.default-namespace` | Namespace | Default current namespace |
+| `spark.sql.catalog.<name>.cache-enabled` | `true`/`false` | Enable catalog cache (default: `true`) |
+| `spark.sql.catalog.<name>.cache.expiration-interval-ms` | Milliseconds | Cache expiration time (default: 30000) |
+
+### Table Defaults and Overrides
+
+Set default or enforced table properties:
+
+```properties
+# Default property (can be overridden)
+spark.sql.catalog.my_catalog.table-default.write.format.default=orc
+
+# Override property (cannot be overridden)
+spark.sql.catalog.my_catalog.table-override.write.metadata.compression-codec=gzip
+```
+
+### View Defaults and Overrides
+
+Similar configuration for views:
+
+```properties
+spark.sql.catalog.my_catalog.view-default.key=value
+spark.sql.catalog.my_catalog.view-override.key=value
+```
+
+## Using Catalogs
+
+Reference tables with catalog names:
+
+<CodeGroup>
+```sql Explicit Catalog
+SELECT * FROM hive_prod.db.table;
+```
+
+```sql Set Current Catalog
+USE hive_prod.db;
+SELECT * FROM table;
+```
+
+```sql Show Current Namespace
+SHOW CURRENT NAMESPACE;
+```
+</CodeGroup>
+
+## Replacing the Session Catalog
+
+Add Iceberg support to Spark's built-in catalog:
+
+```properties
+spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+spark.sql.catalog.spark_catalog.type=hive
+```
+
+<Info>
+This allows using the same Hive Metastore for both Iceberg and non-Iceberg tables. Non-Iceberg tables are handled by the built-in catalog.
+</Info>
+
+## Catalog-Specific Hadoop Configuration
+
+Set per-catalog Hadoop properties:
+
+```properties
+spark.sql.catalog.hadoop_prod.hadoop.fs.s3a.endpoint=http://aws-local:9000
+spark.sql.catalog.hadoop_prod.hadoop.fs.s3a.access.key=mykey
+spark.sql.catalog.hadoop_prod.hadoop.fs.s3a.secret.key=mysecret
+```
+
+<Note>
+Catalog-specific properties take precedence over global `spark.hadoop.*` properties.
+</Note>
+
+## Loading Custom Catalogs
+
+Use a custom catalog implementation:
+
+```properties
+spark.sql.catalog.custom_prod=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.custom_prod.catalog-impl=com.my.custom.CatalogImpl
+spark.sql.catalog.custom_prod.my-additional-catalog-config=my-value
+```
+
+## SQL Extensions
+
+Enable Iceberg SQL extensions for advanced features:
+
+```properties
+spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+```
+
+**Extensions enable:**
+- `CALL` stored procedures
+- `ALTER TABLE ... ADD/DROP PARTITION FIELD`
+- `ALTER TABLE ... WRITE ORDERED BY`
+- `ALTER TABLE ... SET IDENTIFIER FIELDS`
+- Branching and tagging DDL
+
+## Runtime Configuration
+
+### Configuration Precedence
+
+Settings are applied in the following order (highest to lowest priority):
+
+1. **DataSource Read/Write Options** - `.option(...)` in code
+2. **Spark Session Configuration** - `spark.conf.set(...)` or `spark-defaults.conf`
+3. **Table Properties** - `ALTER TABLE SET TBLPROPERTIES`
+4. **Default Value**
+
+### Spark SQL Options
+
+Global Iceberg behaviors via Spark configuration:
+
+<CodeGroup>
+```scala Configure in Code
+val spark = SparkSession.builder()
+  .appName("IcebergExample")
+  .config("spark.sql.catalog.my_catalog", 
+          "org.apache.iceberg.spark.SparkCatalog")
+  .config("spark.sql.extensions", 
+          "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+  .config("spark.sql.iceberg.vectorization.enabled", "false")
+  .getOrCreate()
+```
+
+```properties Configure in File
+spark.sql.iceberg.vectorization.enabled=true
+spark.sql.iceberg.planning.preserve-data-grouping=true
+spark.sql.iceberg.aggregate-push-down.enabled=true
+```
+</CodeGroup>
+
+#### Common SQL Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `spark.sql.iceberg.vectorization.enabled` | Table default | Enable vectorized reads |
+| `spark.sql.iceberg.parquet.reader-type` | `ICEBERG` | Parquet reader (`ICEBERG`, `COMET`) |
+| `spark.sql.iceberg.check-nullability` | `true` | Validate write schema nullability |
+| `spark.sql.iceberg.check-ordering` | `true` | Validate write schema column order |
+| `spark.sql.iceberg.aggregate-push-down.enabled` | `true` | Push down aggregates (MAX, MIN, COUNT) |
+| `spark.sql.iceberg.distribution-mode` | See [Writes](/engines/spark/writes) | Write distribution strategy |
+| `spark.wap.id` | `null` | Write-Audit-Publish snapshot ID |
+| `spark.wap.branch` | `null` | WAP branch name |
+| `spark.sql.iceberg.compression-codec` | Table default | Write compression codec |
+| `spark.sql.iceberg.compression-level` | Table default | Compression level |
+| `spark.sql.iceberg.data-planning-mode` | `AUTO` | Data file scan planning (`AUTO`, `LOCAL`, `DISTRIBUTED`) |
+| `spark.sql.iceberg.delete-planning-mode` | `AUTO` | Delete file scan planning |
+| `spark.sql.iceberg.locality.enabled` | `false` | Report locality for task placement |
+| `spark.sql.iceberg.executor-cache.enabled` | `true` | Enable executor-side cache |
+| `spark.sql.iceberg.merge-schema` | `false` | Enable schema evolution on write |
+| `spark.sql.iceberg.report-column-stats` | `true` | Report Puffin statistics to Spark CBO |
+
+### Read Options
+
+Options for DataFrame reads:
+
+<CodeGroup>
+```scala Time Travel
+spark.read
+    .option("snapshot-id", 10963874102873L)
+    .table("catalog.db.table")
+```
+
+```scala Split Configuration
+spark.read
+    .option("split-size", "268435456")
+    .option("lookback", "10")
+    .table("catalog.db.table")
+```
+</CodeGroup>
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `snapshot-id` | Latest | Snapshot ID to read |
+| `as-of-timestamp` | Latest | Timestamp in milliseconds |
+| `branch` | - | Branch name to read |
+| `tag` | - | Tag name to read |
+| `split-size` | Table property | Override split target size |
+| `lookback` | Table property | Override planning lookback |
+| `file-open-cost` | Table property | Override file open cost |
+| `vectorization-enabled` | Table property | Enable vectorized reads |
+| `batch-size` | Table property | Vectorization batch size |
+| `stream-from-timestamp` | - | Streaming start timestamp |
+| `streaming-max-files-per-micro-batch` | `INT_MAX` | Max files per streaming batch |
+| `streaming-max-rows-per-micro-batch` | `INT_MAX` | Soft max rows per batch |
+
+### Write Options
+
+Options for DataFrame writes:
+
+<CodeGroup>
+```scala Write Configuration
+df.writeTo("catalog.db.table")
+    .option("write-format", "avro")
+    .option("target-file-size-bytes", "268435456")
+    .option("compression-codec", "zstd")
+    .option("snapshot-property.key", "value")
+    .append()
+```
+</CodeGroup>
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `write-format` | Table default | File format (parquet, avro, orc) |
+| `target-file-size-bytes` | Table property | Target file size |
+| `compression-codec` | Table default | Compression codec |
+| `compression-level` | Table default | Compression level |
+| `compression-strategy` | Table default | ORC compression strategy |
+| `distribution-mode` | See [Writes](/engines/spark/writes) | Distribution mode |
+| `fanout-enabled` | `false` | Enable fanout writer |
+| `check-nullability` | `true` | Validate field nullability |
+| `check-ordering` | `true` | Validate column order |
+| `isolation-level` | `null` | Isolation level (`serializable`, `snapshot`) |
+| `validate-from-snapshot-id` | `null` | Base snapshot for conflict detection |
+| `snapshot-property.<key>` | - | Custom snapshot metadata |
+| `delete-granularity` | `file` | Delete granularity |
+
+### Commit Metadata
+
+Add custom metadata to snapshots:
+
+```java
+import org.apache.iceberg.spark.CommitMetadata;
+
+Map<String, String> properties = Maps.newHashMap();
+properties.put("property_key", "property_value");
+
+CommitMetadata.withCommitProperties(properties,
+    () -> {
+        spark.sql("DELETE FROM table WHERE id = 1");
+        return 0;
+    },
+    RuntimeException.class);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/engines/spark/getting-started">
+    Set up your first Iceberg table
+  </Card>
+  <Card title="Write Data" icon="pen" href="/engines/spark/writes">
+    Configure write performance and distribution
+  </Card>
+  <Card title="Procedures" icon="gears" href="/engines/spark/procedures">
+    Use stored procedures for maintenance
+  </Card>
+  <Card title="Structured Streaming" icon="water" href="/engines/spark/structured-streaming">
+    Configure streaming reads and writes
+  </Card>
+</CardGroup>

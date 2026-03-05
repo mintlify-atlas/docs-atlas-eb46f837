@@ -1,0 +1,534 @@
+---
+title: "Reliability"
+description: "Consistency, isolation, and reliability guarantees in Apache Iceberg"
+---
+
+Iceberg was designed to solve correctness and reliability problems that affect traditional table formats, especially when running on cloud object stores like Amazon S3. It provides strong consistency guarantees without requiring distributed locks or consistent listing.
+
+## The Hive Problem
+
+Traditional Hive tables have fundamental reliability issues:
+
+<Warning>
+**Hive's Architecture Flaws:**
+- Tracks partitions in a central metastore
+- Tracks files within partitions via directory listings
+- Makes atomic table changes impossible
+- Requires O(n) listing calls for query planning
+- Breaks on eventually consistent storage (S3)
+</Warning>
+
+Problems this causes:
+
+1. **Race conditions** - Concurrent writes can corrupt table state
+2. **Partial visibility** - Readers may see incomplete commits
+3. **Incorrect results** - Eventually consistent listing returns wrong file sets
+4. **Slow planning** - Must list every partition directory
+
+## Iceberg's Solution
+
+Iceberg uses a **persistent metadata tree** to track all data files:
+
+```
+Table Metadata File (atomic pointer)
+  ↓
+Snapshot (immutable)
+  ↓  
+Manifest List (immutable)
+  ↓
+Manifest Files (immutable)
+  ↓
+Data Files (immutable)
+```
+
+All updates create a new metadata file and **atomically swap the pointer** to it. This provides:
+
+- **Serializable isolation** - All changes occur in a linear history
+- **Reliable reads** - Readers see consistent snapshots without locks
+- **Version history** - Complete audit trail of all changes
+- **Safe operations** - Compaction, late data, and deletes are safe
+
+## Atomic Commits
+
+Every table update is atomic:
+
+```java
+// Example: Atomic append
+Table table = catalog.loadTable(tableId);
+
+// Write new data files
+DataFile file1 = writeData(...);
+DataFile file2 = writeData(...);
+
+// Atomic commit - both files added or neither
+table.newAppend()
+  .appendFile(file1)
+  .appendFile(file2)
+  .commit(); // Atomic swap of metadata file
+```
+
+How it works:
+
+1. **Read** current table metadata file
+2. **Create** new manifest files listing new/changed data files  
+3. **Create** new manifest list combining old and new manifests
+4. **Create** new metadata file pointing to new manifest list
+5. **Commit** by atomically swapping metadata file pointer
+
+If step 5 fails (another writer committed first), the entire operation is invisible and can be retried.
+
+### Atomic Swap Mechanisms
+
+Different catalog implementations provide atomicity differently:
+
+<AccordionGroup>
+  <Accordion title="Hive Metastore">
+    Uses Hive's conditional update on table properties:
+    
+    ```java
+    // Only succeeds if previous metadata location matches
+    hiveClient.alter_table_with_environmentContext(
+      database, table, newTableMetadata,
+      expectedPreviousMetadataLocation
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="AWS Glue">
+    Uses conditional update with version checking:
+    
+    ```java
+    glue.updateTable(
+      new UpdateTableRequest()
+        .withCatalogId(catalogId)
+        .withDatabaseName(database)
+        .withTableInput(newTableInput)
+        .withVersionId(expectedVersionId) // Ensures atomicity
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Nessie / Git-like Catalogs">
+    Uses commit hash-based optimistic locking:
+    
+    ```java
+    nessie.commitMultipleOperations(
+      branch,
+      expectedHash, // Fails if branch moved
+      "Update table",
+      operations
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="REST Catalog">
+    Uses compare-and-swap on metadata location:
+    
+    ```http
+    POST /v1/namespaces/db/tables/table
+    {
+      "requirements": [
+        {
+          "type": "assert-ref-snapshot-id",
+          "ref": "main",
+          "snapshot-id": 12345 // Ensures atomicity
+        }
+      ],
+      "updates": [...]
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Serializable Isolation
+
+Iceberg provides **serializable isolation** - the strongest isolation level:
+
+<Note>
+**Serializable Isolation:** All table changes occur in a single, linear history. Concurrent operations appear to execute sequentially.
+</Note>
+
+### How Readers See Consistency
+
+Readers are isolated from concurrent writes:
+
+```java
+// Reader loads a snapshot
+Table table = catalog.loadTable(tableId);
+long snapshotId = table.currentSnapshot().snapshotId();
+
+// Read remains consistent even if writers commit changes
+TableScan scan = table.newScan()
+  .useSnapshot(snapshotId); // Always sees the same snapshot
+
+// Writers can commit while reader is running
+table.newAppend().appendFile(newFile).commit();
+
+// Reader is unaffected - still sees original snapshot
+Iterable<FileScanTask> files = scan.planFiles();
+```
+
+Readers never need locks:
+- Snapshots are immutable
+- Readers pin a snapshot at table load time
+- Concurrent writes create new snapshots
+- Readers remain on their snapshot until explicitly refreshed
+
+### How Writers Achieve Serializability
+
+Writers use **optimistic concurrency**:
+
+```java
+// Writer 1 and Writer 2 start simultaneously
+
+// Both read current metadata (snapshot 10)
+Table table1 = catalog.loadTable(tableId); // Sees snapshot 10
+Table table2 = catalog.loadTable(tableId); // Sees snapshot 10
+
+// Both prepare commits
+table1.newAppend().appendFile(file1).commit(); // Creates snapshot 11 - SUCCESS
+table2.newAppend().appendFile(file2).commit(); // Tries to create snapshot 11 - CONFLICT
+
+// Writer 2 detects conflict and retries
+table2.refresh(); // Now sees snapshot 11
+table2.newAppend().appendFile(file2).commit(); // Creates snapshot 12 - SUCCESS
+```
+
+The result: A linear history (10 → 11 → 12) even though writes were concurrent.
+
+## Concurrent Write Operations
+
+Multiple writers can operate concurrently using optimistic concurrency:
+
+### Append Operations
+
+Appends are highly concurrent:
+
+```java
+// Multiple writers appending simultaneously
+ExecutorService executor = Executors.newFixedThreadPool(10);
+
+for (int i = 0; i < 100; i++) {
+  int taskId = i;
+  executor.submit(() -> {
+    Table table = catalog.loadTable(tableId);
+    DataFile file = writeData(taskId);
+    
+    table.newAppend()
+      .appendFile(file)
+      .commit(); // Automatic retry on conflict
+  });
+}
+```
+
+Appends succeed unless:
+- The table was deleted
+- Schema validation fails  
+- Required properties aren't met
+
+### Retry Optimization
+
+Writers structure operations to minimize retry cost:
+
+**Good:** Appends create new manifests that can be reused
+```java
+// Manifest file created before commit attempt
+// On retry, same manifest is added to new snapshot
+table.newAppend()
+  .appendFile(file1) // Writes new manifest: manifest-1.avro
+  .commit();         // Adds manifest-1.avro to snapshot
+
+// Retry reuses manifest-1.avro (no rewrite needed)
+```
+
+**Expensive:** Rewrites require recreating manifests
+```java
+// Must verify rewritten files still exist
+table.newRewrite()
+  .rewriteFiles(
+    ImmutableSet.of(file1, file2), // Files to remove
+    ImmutableSet.of(merged)         // Files to add
+  )
+  .commit();
+
+// On retry, must check file1 and file2 weren't deleted
+```
+
+### Conflict Resolution
+
+Operations specify **assumptions** that must hold for commit:
+
+```java
+// Example: Compaction assumes source files still exist
+table.newRewrite()
+  .rewriteFiles(
+    oldFiles,  // Assumption: These files are still in the table
+    newFiles   // Action: Replace with these files
+  )
+  .commit();
+
+// On conflict:
+// 1. Refresh table to see new state
+// 2. Check if oldFiles are still present
+// 3. If yes, retry commit
+// 4. If no, operation fails (files were already deleted)
+```
+
+Common validation patterns:
+
+- **Append** - No assumptions, always retryable
+- **Compaction** - Assumes source files exist
+- **Delete** - Assumes files to delete exist
+- **Replace** - Assumes schema/partition spec compatible
+
+## Version History and Rollback
+
+All snapshots form a complete version history:
+
+```java
+// View snapshot history
+for (Snapshot snapshot : table.snapshots()) {
+  System.out.printf("Snapshot %d at %s: %s%n",
+    snapshot.snapshotId(),
+    Instant.ofEpochMilli(snapshot.timestampMillis()),
+    snapshot.operation()
+  );
+}
+```
+
+Rollback to any previous snapshot:
+
+```sql
+-- Rollback to specific snapshot
+CALL catalog_name.system.rollback_to_snapshot(
+  'db.table', 
+  12345  -- snapshot ID
+);
+
+-- Rollback to timestamp  
+CALL catalog_name.system.rollback_to_timestamp(
+  'db.table',
+  TIMESTAMP '2024-03-01 10:00:00'
+);
+```
+
+Rollback is metadata-only:
+- Creates a new snapshot pointing to old state
+- No data files are rewritten
+- Instant operation regardless of table size
+
+```java
+// Rollback using Java API
+table.manageSnapshots()
+  .rollbackTo(targetSnapshotId)
+  .commit();
+```
+
+## Safe File-Level Operations
+
+Atomic commits enable safe table maintenance:
+
+### Safe Compaction
+
+Compact small files without corruption risk:
+
+```java
+// Find small files to compact
+List<DataFile> smallFiles = findSmallFiles(table);
+
+// Compact into larger files  
+DataFile compacted = mergeFiles(smallFiles);
+
+// Atomically replace small files with compacted file
+table.newRewrite()
+  .rewriteFiles(
+    ImmutableSet.copyOf(smallFiles), // Remove these
+    ImmutableSet.of(compacted)        // Add this
+  )
+  .commit();
+
+// If commit fails (files deleted by another writer), retry logic handles it
+```
+
+Without atomicity, compaction could:
+- Leave duplicate data (compacted + originals)
+- Lose data (delete originals before adding compacted)
+- Corrupt table state (partial commit)
+
+### Safe Late Data
+
+Add late-arriving data to old partitions:
+
+```java
+// Write late data for yesterday
+DataFile lateFile = writeLateData(yesterday);
+
+// Safely add to historical partition
+table.newAppend()
+  .appendFile(lateFile)
+  .commit();
+
+// Readers see a consistent snapshot (before or after, never partial)
+```
+
+### Safe Delete
+
+Delete files or partitions atomically:
+
+```java
+// Delete files matching a filter
+table.newDelete()
+  .deleteFromRowFilter(Expressions.equal("status", "deleted"))
+  .commit();
+
+// All matching files deleted atomically
+// Readers never see partial deletes
+```
+
+## Compatibility with Object Stores
+
+Iceberg works correctly on eventually consistent storage:
+
+<Note>
+**No Listing Required:** Iceberg never uses directory listing to find data files. All files are tracked explicitly in manifests.
+</Note>
+
+### S3 Compatibility
+
+Iceberg is fully compatible with S3:
+
+- **No consistent listing needed** - Files tracked in manifests, not via `listObjects`
+- **No rename operations** - Files written in-place and never moved
+- **Atomic commits** - Via catalog's atomic swap (Glue, Hive, etc.)
+
+```java
+// Safe on S3 - no listing, no rename
+Table table = catalog.loadTable(tableId);
+
+// Writes files directly to final location
+DataFile file = writeToS3(data, "s3://bucket/db/table/data/file.parquet");
+
+// Atomic commit via Glue catalog
+table.newAppend()
+  .appendFile(file)
+  .commit(); // Glue conditional update ensures atomicity
+```
+
+### Required File System Operations
+
+Iceberg only requires:
+
+1. **In-place write** - Write files to final location
+2. **Seekable reads** - Random access for columnar formats
+3. **Delete** - Remove old files during maintenance
+
+**Not required:**
+- Rename/move operations
+- Directory listing
+- Consistent listing  
+- File locking
+
+## Performance Benefits
+
+Reliability features also improve performance:
+
+### O(1) Planning
+
+```java
+// Hive: O(n) listing calls (n = partition count)
+// Must list each partition directory to find files
+
+// Iceberg: O(1) remote calls
+Table table = catalog.loadTable(tableId);     // 1 call: read metadata
+Snapshot snap = table.currentSnapshot();       // In memory
+List<ManifestFile> manifests = snap.manifests(); // 1 call: read manifest list  
+
+// Filter manifests using partition bounds (in memory)
+// Read only necessary manifest files
+```
+
+Result: Plan 100TB table on a single node in seconds.
+
+### Distributed Planning
+
+File pruning happens on worker nodes:
+
+```java
+// Planning distributes to query engine
+TableScan scan = table.newScan()
+  .filter(Expressions.greaterThan("price", 100));
+
+// Each worker:
+// 1. Reads its assigned manifest files  
+// 2. Filters files using column statistics
+// 3. Scans only matching files
+
+// Metastore not involved in planning
+```
+
+Benefits:
+- No metastore bottleneck
+- Scales to thousands of workers
+- Uses column statistics for aggressive pruning
+
+### Finer-Grained Partitioning
+
+O(1) planning enables more partitions:
+
+```sql
+-- Hive: Limited to ~10K partitions (listing overhead)
+PARTITIONED BY (year, month, day)
+
+-- Iceberg: Can handle millions of partitions
+PARTITIONED BY (hours(event_time), region, user_bucket)
+-- No listing = no partition count limit
+```
+
+## Isolation Level Comparison
+
+| Feature | Hive | Iceberg |
+|---------|------|----------|
+| Concurrent reads | Read locks required | Lock-free |
+| Concurrent writes | Write locks required | Optimistic concurrency |
+| Read isolation | Read uncommitted | Serializable |
+| Atomic commits | No (partition + files) | Yes (single metadata file) |
+| Consistency on S3 | Requires consistent listing | Works with eventual consistency |
+| Query planning | O(n) listings | O(1) remote calls |
+
+## Reliability Guarantees Summary
+
+<AccordionGroup>
+  <Accordion title="Serializable Isolation">
+    All table changes occur in a linear history of atomic updates. Concurrent operations never cause corruption or partial visibility.
+  </Accordion>
+
+  <Accordion title="Reliable Reads">
+    Readers see a consistent snapshot without locks. Concurrent writes don't affect ongoing reads.
+  </Accordion>
+
+  <Accordion title="Version History">
+    Complete audit trail of all changes. Rollback to any previous state instantly.
+  </Accordion>
+
+  <Accordion title="Safe Maintenance">
+    Compaction, deletes, and schema changes are atomic and safe, even with concurrent readers/writers.
+  </Accordion>
+
+  <Accordion title="Object Store Compatible">
+    Works correctly on S3 and other eventually consistent storage without requiring listing or rename.
+  </Accordion>
+</AccordionGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Table Format" icon="table" href="/concepts/table-format">
+    Understand the metadata structure that enables reliability
+  </Card>
+  <Card title="Branching" icon="code-branch" href="/concepts/branching">
+    Use branches for safe testing and validation
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="/concepts/performance">
+    See how reliability features improve performance
+  </Card>
+</CardGroup>

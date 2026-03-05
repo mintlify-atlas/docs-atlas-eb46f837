@@ -1,0 +1,196 @@
+---
+title: "Table Format"
+description: "Understanding Apache Iceberg's table format architecture and design"
+---
+
+Apache Iceberg is a high-performance table format designed to manage large, slow-changing collections of files in distributed file systems or object stores. Unlike traditional table formats, Iceberg treats data as a table rather than as directories of files.
+
+## Architecture Overview
+
+Iceberg uses a tree-based metadata structure to track all files in a table:
+
+```
+Table Metadata File (atomic pointer)
+  |
+  v
+Snapshot (point-in-time state)
+  |
+  v
+Manifest List (index of manifests)
+  |
+  v
+Manifest Files (lists of data files)
+  |
+  v
+Data Files (Parquet, ORC, Avro)
+```
+
+This hierarchical structure enables:
+- **Atomic commits** - Table changes are atomic swaps of metadata files
+- **Snapshot isolation** - Readers see a consistent view without locks
+- **Fast planning** - O(1) remote calls instead of O(n) file listings
+- **Time travel** - Access any historical snapshot
+
+## Key Components
+
+### Table Metadata File
+
+The table metadata file is the entry point to a table. It contains:
+- Current schema and all historical schemas
+- Current partition spec and all historical partition specs
+- Sort orders
+- Table properties and configuration
+- Snapshot log
+- Reference to the current snapshot
+
+**All table updates create a new metadata file and atomically swap the pointer.**
+
+### Snapshots
+
+A snapshot represents the state of a table at a specific point in time. Each snapshot includes:
+- Unique snapshot ID
+- Timestamp when the snapshot was created
+- Operation that created it (append, replace, delete, etc.)
+- Manifest list containing all data files
+- Summary metrics (files added, deleted, records, etc.)
+
+Snapshots form the foundation for:
+- Reader isolation - queries always use a consistent snapshot
+- Time travel - query data as it existed at any snapshot
+- Rollback - revert to a previous table state
+- Incremental processing - detect changes between snapshots
+
+### Manifest Lists
+
+A manifest list stores metadata about manifest files for a snapshot:
+- Path to each manifest file
+- Partition value ranges (min/max for each partition field)
+- Counts of added, deleted, and existing files
+- Sequence numbers for tracking relative age
+
+**Manifest lists act as an index** - they enable filtering out entire manifests during query planning without reading them.
+
+### Manifest Files
+
+Manifest files are Avro files that list data files along with their metadata:
+- File path and format (Parquet, ORC, Avro)
+- Partition values for the file
+- Column-level statistics (value counts, null counts, lower/upper bounds)
+- File size and record count
+- File-level metrics for query planning
+
+Manifests are organized by partition spec - when a partition spec changes, new manifests are created while old manifests remain unchanged.
+
+### Data Files
+
+Data files contain the actual table data in columnar formats:
+- **Parquet** - recommended for most use cases
+- **ORC** - optimized for Hive compatibility
+- **Avro** - row-oriented, good for streaming writes
+
+Data files are immutable once written. Updates create new files rather than modifying existing ones.
+
+## Optimistic Concurrency
+
+Iceberg supports multiple concurrent writers using optimistic concurrency control:
+
+1. Each writer reads the current table metadata
+2. Writer creates new data files and manifest files
+3. Writer prepares a new metadata file based on the current version
+4. Writer attempts to commit by atomically swapping the metadata file pointer
+5. If another writer committed first, retry with the new current state
+
+```java
+// Example: Concurrent append operation
+Table table = catalog.loadTable(tableId);
+
+// Create and commit new data
+AppendFiles append = table.newAppend();
+append.appendFile(dataFile1);
+append.appendFile(dataFile2);
+append.commit(); // Atomic swap - will retry if there's a conflict
+```
+
+This approach enables:
+- **Serializable isolation** - all changes occur in a linear history
+- **No distributed locks** - writers don't block readers or each other
+- **Efficient retries** - work is structured to minimize wasted effort
+
+## Sequence Numbers
+
+Every successful commit is assigned a sequence number that establishes the relative age of files:
+
+- Sequence numbers are assigned when a snapshot is committed
+- All files added in a snapshot inherit the snapshot's sequence number
+- Sequence numbers are used to determine which delete files apply to which data files
+- This enables correct handling of row-level deletes and updates
+
+## Format Versions
+
+Iceberg has evolved through multiple format versions:
+
+<CardGroup cols={3}>
+  <Card title="Version 1" icon="one">
+    Analytic data tables with immutable files (Parquet, Avro, ORC)
+  </Card>
+  <Card title="Version 2" icon="two">
+    Adds row-level deletes (position and equality deletes)
+  </Card>
+  <Card title="Version 3" icon="three">
+    Extended types (nanosecond timestamps, variant, geometry), default values, row lineage
+  </Card>
+</CardGroup>
+
+Tables can be upgraded between versions, and v1 metadata files remain valid in v2/v3 tables.
+
+## Design Goals
+
+Iceberg was designed with specific goals:
+
+<AccordionGroup>
+  <Accordion title="Serializable Isolation">
+    Reads use committed snapshots and are never affected by concurrent writes. All writes appear in a linear history.
+  </Accordion>
+  
+  <Accordion title="Speed">
+    Operations use O(1) remote calls for planning, not O(n) with table size. Planning scales to petabyte tables on a single node.
+  </Accordion>
+  
+  <Accordion title="Scale">
+    Job planning happens on clients, not a central metadata store. Metadata includes statistics for cost-based optimization.
+  </Accordion>
+  
+  <Accordion title="Evolution">
+    Full schema and partition spec evolution without rewriting data. Safe column operations with correctness guarantees.
+  </Accordion>
+  
+  <Accordion title="Storage Separation">
+    Queries use predicates on data values, not partition values. Partitioning can evolve as data volume changes.
+  </Accordion>
+</AccordionGroup>
+
+## File System Requirements
+
+Iceberg only requires basic file system operations:
+- **In-place write** - files are never moved after being written
+- **Seekable reads** - for columnar format support
+- **Deletes** - remove files that are no longer used
+
+**No rename or listing operations required** - making Iceberg compatible with object stores like S3 without consistency requirements.
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Schemas" icon="table" href="/concepts/schemas">
+    Learn about Iceberg's schema structure and type system
+  </Card>
+  <Card title="Partitioning" icon="layer-group" href="/concepts/partitioning">
+    Understand hidden partitioning and partition transforms
+  </Card>
+  <Card title="Evolution" icon="code-branch" href="/concepts/evolution">
+    Explore schema and partition evolution capabilities
+  </Card>
+  <Card title="Reliability" icon="shield-check" href="/concepts/reliability">
+    Discover Iceberg's reliability guarantees
+  </Card>
+</CardGroup>

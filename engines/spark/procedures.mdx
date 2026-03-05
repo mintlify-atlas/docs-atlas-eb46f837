@@ -1,0 +1,491 @@
+---
+title: 'Spark Procedures'
+description: 'Stored procedures for maintaining and managing Iceberg tables in Spark'
+---
+
+## Overview
+
+Iceberg provides stored procedures for table maintenance and management. Procedures are available when using [Iceberg SQL extensions](/engines/spark/configuration#sql-extensions).
+
+<Note>
+In Spark 4.0+, procedures are supported natively but are **case-sensitive**.
+</Note>
+
+## Using Procedures
+
+Call procedures from any configured catalog using the `CALL` statement:
+
+```sql
+CALL catalog_name.system.procedure_name(arguments);
+```
+
+### Argument Passing
+
+<CodeGroup>
+```sql Named Arguments (Recommended)
+CALL catalog_name.system.rollback_to_snapshot(
+    table => 'db.sample',
+    snapshot_id => 1234
+);
+```
+
+```sql Positional Arguments
+CALL catalog_name.system.rollback_to_snapshot('db.sample', 1234);
+```
+</CodeGroup>
+
+<Warning>
+Mixing positional and named arguments is **not supported**.
+</Warning>
+
+## Snapshot Management
+
+### rollback_to_snapshot
+
+Roll back a table to a specific snapshot:
+
+<CodeGroup>
+```sql Rollback
+CALL catalog.system.rollback_to_snapshot('db.sample', 1);
+```
+
+```text Output
++---------------------+--------------------+
+| previous_snapshot_id | current_snapshot_id |
++---------------------+--------------------+
+| 2                   | 1                   |
++---------------------+--------------------+
+```
+</CodeGroup>
+
+**Arguments:**
+- `table` (required) - Table name
+- `snapshot_id` (required) - Target snapshot ID
+
+### rollback_to_timestamp
+
+Roll back to a snapshot at a specific time:
+
+```sql
+CALL catalog.system.rollback_to_timestamp(
+    'db.sample',
+    TIMESTAMP '2021-06-30 00:00:00.000'
+);
+```
+
+**Arguments:**
+- `table` (required) - Table name
+- `timestamp` (required) - Target timestamp
+
+### set_current_snapshot
+
+Set the current snapshot (not limited to ancestors):
+
+<CodeGroup>
+```sql By Snapshot ID
+CALL catalog.system.set_current_snapshot('db.sample', 1);
+```
+
+```sql By Reference
+CALL catalog.system.set_current_snapshot(
+    table => 'db.sample',
+    ref => 's1'
+);
+```
+</CodeGroup>
+
+### cherrypick_snapshot
+
+Apply changes from a snapshot without removing the original:
+
+```sql
+CALL catalog.system.cherrypick_snapshot('my_table', 1);
+```
+
+<Info>
+Only append and dynamic overwrite snapshots can be cherry-picked.
+</Info>
+
+### fast_forward
+
+Fast-forward a branch to another branch's head:
+
+```sql
+CALL catalog.system.fast_forward(
+    'my_table',
+    'main',
+    'audit-branch'
+);
+```
+
+## Metadata Management
+
+### expire_snapshots
+
+Remove old snapshots and unreferenced data files:
+
+<CodeGroup>
+```sql Basic Expiration
+CALL catalog.system.expire_snapshots('db.sample');
+```
+
+```sql Custom Retention
+CALL catalog.system.expire_snapshots(
+    'db.sample',
+    TIMESTAMP '2021-06-30 00:00:00.000',
+    100  -- retain last 100 snapshots
+);
+```
+
+```sql Expire Specific Snapshots
+CALL catalog.system.expire_snapshots(
+    table => 'db.sample',
+    snapshot_ids => ARRAY(123, 456)
+);
+```
+</CodeGroup>
+
+**Arguments:**
+- `table` (required) - Table name
+- `older_than` - Expiration timestamp (default: 5 days ago)
+- `retain_last` - Minimum snapshots to keep (default: 1)
+- `max_concurrent_deletes` - Thread pool size for deletions
+- `stream_results` - Stream results to prevent driver OOM
+- `snapshot_ids` - Specific snapshot IDs to expire
+
+**Output:**
+- `deleted_data_files_count`
+- `deleted_position_delete_files_count`
+- `deleted_equality_delete_files_count`
+- `deleted_manifest_files_count`
+- `deleted_manifest_lists_count`
+
+### remove_orphan_files
+
+Remove files not referenced in table metadata:
+
+<CodeGroup>
+```sql Dry Run
+CALL catalog.system.remove_orphan_files(
+    table => 'db.sample',
+    dry_run => true
+);
+```
+
+```sql Remove Orphans
+CALL catalog.system.remove_orphan_files(
+    table => 'db.sample',
+    older_than => TIMESTAMP '2024-01-01 00:00:00'
+);
+```
+
+```sql Specific Location
+CALL catalog.system.remove_orphan_files(
+    table => 'db.sample',
+    location => 'tablelocation/data'
+);
+```
+</CodeGroup>
+
+**Arguments:**
+- `table` (required) - Table name
+- `older_than` - Remove files older than this (default: 3 days ago)
+- `location` - Specific directory to scan
+- `dry_run` - Preview without deleting (default: false)
+- `max_concurrent_deletes` - Thread pool size
+- `stream_results` - Stream results to prevent OOM
+
+<Warning>
+Orphan file removal is **irreversible**. Always run with `dry_run => true` first.
+</Warning>
+
+### rewrite_data_files
+
+Compact small files and optimize data layout:
+
+<CodeGroup>
+```sql Bin-Pack Strategy
+CALL catalog.system.rewrite_data_files('db.sample');
+```
+
+```sql Sort Strategy
+CALL catalog.system.rewrite_data_files(
+    table => 'db.sample',
+    strategy => 'sort',
+    sort_order => 'id DESC NULLS LAST, name ASC'
+);
+```
+
+```sql Z-Order Strategy
+CALL catalog.system.rewrite_data_files(
+    table => 'db.sample',
+    strategy => 'sort',
+    sort_order => 'zorder(c1, c2)'
+);
+```
+
+```sql With Options
+CALL catalog.system.rewrite_data_files(
+    table => 'db.sample',
+    options => map(
+        'min-input-files', '2',
+        'remove-dangling-deletes', 'true'
+    )
+);
+```
+
+```sql Filtered Rewrite
+CALL catalog.system.rewrite_data_files(
+    table => 'db.sample',
+    where => 'id = 3 AND name = "foo"'
+);
+```
+</CodeGroup>
+
+**Common Options:**
+- `target-file-size-bytes` - Target output file size (default: 512 MB)
+- `min-file-size-bytes` - Files below this are rewritten (default: 75% of target)
+- `max-file-size-bytes` - Files above this are rewritten (default: 180% of target)
+- `min-input-files` - Minimum files to trigger rewrite (default: 5)
+- `rewrite-all` - Force rewrite all files (default: false)
+- `remove-dangling-deletes` - Remove orphaned delete files (default: false)
+
+### rewrite_manifests
+
+Optimize manifest files for better scan planning:
+
+<CodeGroup>
+```sql Rewrite Manifests
+CALL catalog.system.rewrite_manifests('db.sample');
+```
+
+```sql Specific Spec ID
+CALL catalog.system.rewrite_manifests(
+    table => 'db.sample',
+    spec_id => 1
+);
+```
+</CodeGroup>
+
+### rewrite_position_delete_files
+
+Compact position delete files and remove dangling deletes:
+
+<CodeGroup>
+```sql Compact Delete Files
+CALL catalog.system.rewrite_position_delete_files('db.sample');
+```
+
+```sql Rewrite All
+CALL catalog.system.rewrite_position_delete_files(
+    table => 'db.sample',
+    options => map('rewrite-all', 'true')
+);
+```
+</CodeGroup>
+
+## Table Migration
+
+### snapshot
+
+Create a lightweight copy for testing:
+
+```sql
+CALL catalog.system.snapshot(
+    'db.sample',
+    'db.snap',
+    '/tmp/temptable/'
+);
+```
+
+<Info>
+Snapshot tables share data files with the source table. Use `DROP TABLE` to clean up when done testing.
+</Info>
+
+### migrate
+
+Replace a Hive/Spark table with an Iceberg table:
+
+```sql
+CALL catalog.system.migrate(
+    'spark_catalog.db.sample',
+    map('foo', 'bar')
+);
+```
+
+**Arguments:**
+- `table` (required) - Table to migrate
+- `properties` - Properties for the new Iceberg table
+- `drop_backup` - Don't retain original table (default: false)
+- `backup_table_name` - Custom backup name (default: `table_BACKUP_`)
+
+### add_files
+
+Add files from external sources:
+
+```sql
+CALL spark_catalog.system.add_files(
+    table => 'db.tbl',
+    source_table => 'db.src_tbl',
+    partition_filter => map('part_col_1', 'A')
+);
+```
+
+<Warning>
+Schema is **not validated**. Adding incompatible files will cause query failures.
+</Warning>
+
+### register_table
+
+Register an existing metadata file in a catalog:
+
+```sql
+CALL spark_catalog.system.register_table(
+    table => 'db.tbl',
+    metadata_file => 'path/to/metadata/file.json'
+);
+```
+
+<Warning>
+Registering the same metadata in multiple catalogs can cause data loss and corruption.
+</Warning>
+
+## Change Data Capture
+
+### create_changelog_view
+
+Create a view showing table changes:
+
+<CodeGroup>
+```sql Basic Changelog
+CALL catalog.system.create_changelog_view(
+    table => 'db.tbl',
+    options => map(
+        'start-snapshot-id', '1',
+        'end-snapshot-id', '2'
+    )
+);
+```
+
+```sql With Identifier Columns
+CALL catalog.system.create_changelog_view(
+    table => 'db.tbl',
+    options => map('start-snapshot-id', '1'),
+    identifier_columns => array('id', 'name')
+);
+```
+
+```sql Net Changes
+CALL catalog.system.create_changelog_view(
+    table => 'db.tbl',
+    options => map('end-snapshot-id', '100'),
+    net_changes => true
+);
+```
+</CodeGroup>
+
+**Query the changelog:**
+
+```sql
+SELECT * FROM tbl_changes WHERE _change_type = 'INSERT';
+```
+
+**CDC Metadata Columns:**
+- `_change_type` - INSERT, DELETE, UPDATE_BEFORE, UPDATE_AFTER
+- `_change_ordinal` - Order of changes
+- `_commit_snapshot_id` - Snapshot where change occurred
+
+## Table Statistics
+
+### compute_table_stats
+
+Calculate NDV statistics for columns:
+
+<CodeGroup>
+```sql All Columns
+CALL catalog.system.compute_table_stats('my_table');
+```
+
+```sql Specific Snapshot and Columns
+CALL catalog.system.compute_table_stats(
+    table => 'my_table',
+    snapshot_id => 'snap1',
+    columns => array('col1', 'col2')
+);
+```
+</CodeGroup>
+
+### compute_partition_stats
+
+Compute partition statistics incrementally:
+
+```sql
+CALL catalog.system.compute_partition_stats('my_table');
+```
+
+## Metadata Information
+
+### ancestors_of
+
+Report snapshot ancestry:
+
+<CodeGroup>
+```sql Current Ancestors
+CALL catalog.system.ancestors_of('db.tbl');
+```
+
+```sql Specific Snapshot Ancestors
+CALL catalog.system.ancestors_of(
+    table => 'db.tbl',
+    snapshot_id => 1
+);
+```
+</CodeGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Regular Maintenance">
+    Run maintenance procedures on a schedule:
+    
+    - **Daily**: `expire_snapshots` for active tables
+    - **Weekly**: `rewrite_data_files` for frequently updated tables
+    - **Monthly**: `remove_orphan_files` for all tables
+  </Accordion>
+  
+  <Accordion title="Streaming Tables">
+    For tables with streaming writes:
+    
+    - Use longer trigger intervals (1+ minutes)
+    - Regularly run `rewrite_data_files` to compact small files
+    - Run `rewrite_manifests` to optimize metadata
+  </Accordion>
+  
+  <Accordion title="Safe Orphan Removal">
+    Always use dry run first:
+    
+    ```sql
+    CALL catalog.system.remove_orphan_files(
+        table => 'db.sample',
+        dry_run => true
+    );
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Writes" icon="pen" href="/engines/spark/writes">
+    Learn about write operations and distribution
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/engines/spark/configuration">
+    Configure Spark for optimal performance
+  </Card>
+  <Card title="Queries" icon="search" href="/engines/spark/queries">
+    Query tables and inspect metadata
+  </Card>
+  <Card title="Structured Streaming" icon="water" href="/engines/spark/structured-streaming">
+    Maintain streaming tables
+  </Card>
+</CardGroup>

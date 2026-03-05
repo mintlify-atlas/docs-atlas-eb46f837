@@ -1,0 +1,272 @@
+---
+title: TableIdentifier
+description: Table identification in Apache Iceberg catalogs
+---
+
+A `TableIdentifier` uniquely identifies a table within an Iceberg catalog by combining a namespace and table name.
+
+## Overview
+
+TableIdentifier provides a standard way to reference tables across different catalog implementations. It consists of a namespace (which may be empty) and a table name.
+
+## Class
+
+```java
+public class TableIdentifier
+```
+
+## Creating Table Identifiers
+
+### of() with String Array
+
+Creates a table identifier from an array of names. The last element is the table name, and preceding elements form the namespace.
+
+```java
+public static TableIdentifier of(String... names)
+```
+
+**Parameters:**
+- `names` - Array where the last element is the table name and preceding elements are namespace levels
+
+**Returns:** A new TableIdentifier instance
+
+**Example:**
+```java
+// Table "users" in namespace "db"
+TableIdentifier id1 = TableIdentifier.of("db", "users");
+
+// Table "events" in multi-level namespace
+TableIdentifier id2 = TableIdentifier.of("warehouse", "analytics", "events");
+
+// Table with no namespace
+TableIdentifier id3 = TableIdentifier.of("simple_table");
+```
+
+### of() with Namespace
+
+Creates a table identifier from a namespace and table name.
+
+```java
+public static TableIdentifier of(Namespace namespace, String name)
+```
+
+**Parameters:**
+- `namespace` - A namespace
+- `name` - The table name
+
+**Returns:** A new TableIdentifier instance
+
+**Example:**
+```java
+Namespace ns = Namespace.of("data_warehouse", "sales");
+TableIdentifier id = TableIdentifier.of(ns, "transactions");
+```
+
+### parse()
+
+Parses a table identifier from a dot-separated string.
+
+```java
+public static TableIdentifier parse(String identifier)
+```
+
+**Parameters:**
+- `identifier` - A dot-separated identifier string
+
+**Returns:** A new TableIdentifier instance
+
+**Example:**
+```java
+// Parse "db.schema.table" into identifier
+TableIdentifier id = TableIdentifier.parse("analytics.production.events");
+
+// Parse simple table name
+TableIdentifier simple = TableIdentifier.parse("users");
+```
+
+## Instance Methods
+
+### namespace()
+
+Returns the identifier's namespace.
+
+```java
+public Namespace namespace()
+```
+
+**Returns:** The namespace
+
+**Example:**
+```java
+TableIdentifier id = TableIdentifier.of("warehouse", "sales", "orders");
+Namespace ns = id.namespace(); // Namespace.of("warehouse", "sales")
+```
+
+### name()
+
+Returns the table name.
+
+```java
+public String name()
+```
+
+**Returns:** The table name
+
+**Example:**
+```java
+TableIdentifier id = TableIdentifier.of("db", "users");
+String name = id.name(); // "users"
+```
+
+### hasNamespace()
+
+Checks whether the namespace is not empty.
+
+```java
+public boolean hasNamespace()
+```
+
+**Returns:** true if the namespace is not empty, false otherwise
+
+**Example:**
+```java
+TableIdentifier id1 = TableIdentifier.of("db", "table");
+boolean has1 = id1.hasNamespace(); // true
+
+TableIdentifier id2 = TableIdentifier.of("table");
+boolean has2 = id2.hasNamespace(); // false
+```
+
+### toLowerCase()
+
+Returns a new identifier with all levels converted to lowercase.
+
+```java
+public TableIdentifier toLowerCase()
+```
+
+**Returns:** A new TableIdentifier with lowercase namespace and name
+
+**Example:**
+```java
+TableIdentifier id = TableIdentifier.of("DB", "MyTable");
+TableIdentifier lower = id.toLowerCase();
+// lower is equivalent to TableIdentifier.of("db", "mytable")
+```
+
+### toString()
+
+Returns a string representation of the identifier.
+
+```java
+@Override
+public String toString()
+```
+
+**Returns:** Dot-separated string representation
+
+**Example:**
+```java
+TableIdentifier id = TableIdentifier.of("warehouse", "sales", "orders");
+String str = id.toString(); // "warehouse.sales.orders"
+
+TableIdentifier simple = TableIdentifier.of("users");
+String simpleStr = simple.toString(); // "users"
+```
+
+## Examples
+
+### Basic Usage with Catalog
+
+```java
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.Table;
+
+// Create identifier and load table
+TableIdentifier id = TableIdentifier.of("analytics", "events");
+Catalog catalog = ...;
+Table table = catalog.loadTable(id);
+
+// Create table with identifier
+Schema schema = new Schema(...);
+Table newTable = catalog.createTable(id, schema);
+```
+
+### Working with Multi-Level Namespaces
+
+```java
+// Create identifier with multi-level namespace
+TableIdentifier id = TableIdentifier.of(
+    "data_warehouse",
+    "sales",
+    "quarterly",
+    "q1_transactions"
+);
+
+// Access parts
+Namespace ns = id.namespace(); // ["data_warehouse", "sales", "quarterly"]
+String tableName = id.name();   // "q1_transactions"
+String full = id.toString();    // "data_warehouse.sales.quarterly.q1_transactions"
+```
+
+### Parsing Identifiers
+
+```java
+// Parse from configuration or user input
+String userInput = "warehouse.production.events";
+TableIdentifier id = TableIdentifier.parse(userInput);
+
+if (id.hasNamespace()) {
+    System.out.println("Namespace: " + id.namespace());
+}
+System.out.println("Table: " + id.name());
+```
+
+### Case Conversion
+
+```java
+// Normalize identifiers for case-insensitive comparisons
+TableIdentifier original = TableIdentifier.of("Analytics", "Events");
+TableIdentifier normalized = original.toLowerCase();
+
+// Use normalized version for lookups
+boolean exists = catalog.tableExists(normalized);
+```
+
+### Equality and Comparison
+
+```java
+TableIdentifier id1 = TableIdentifier.of("db", "table");
+TableIdentifier id2 = TableIdentifier.of("db", "table");
+TableIdentifier id3 = TableIdentifier.parse("db.table");
+
+// All are equal
+assert id1.equals(id2);
+assert id1.equals(id3);
+assert id1.hashCode() == id2.hashCode();
+```
+
+## Validation
+
+TableIdentifier enforces the following constraints:
+
+- Table name cannot be null or empty
+- Namespace cannot be null (but can be empty)
+- Cannot be created from a null array
+
+```java
+// These will throw exceptions:
+
+// TableIdentifier.of((String[]) null); // IllegalArgumentException
+// TableIdentifier.of(); // IllegalArgumentException (no table name)
+// TableIdentifier.of(ns, null); // IllegalArgumentException
+// TableIdentifier.of(ns, ""); // IllegalArgumentException
+```
+
+## See Also
+
+- [Catalog](/api/catalog/catalog) - Catalog API for table operations
+- [Namespace](/api/catalog/namespace) - Namespace representation
+- [Table](/api/table) - Table API reference

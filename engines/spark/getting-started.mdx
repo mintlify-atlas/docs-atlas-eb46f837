@@ -1,0 +1,257 @@
+---
+title: 'Getting Started with Spark'
+description: 'Quick start guide for using Apache Iceberg with Apache Spark'
+---
+
+## Installation
+
+The latest version of Iceberg is **{{ icebergVersion }}**.
+
+### Using Spark Shell
+
+To use Iceberg in a Spark shell, add the runtime JAR using the `--packages` option:
+
+```bash
+spark-shell --packages org.apache.iceberg:iceberg-spark-runtime-3.5:{{ icebergVersion }}
+```
+
+<Info>
+If you want to include Iceberg in your Spark installation permanently, add the `iceberg-spark-runtime` JAR to Spark's `jars` folder.
+</Info>
+
+### Using Spark SQL
+
+For Spark SQL with catalog configuration:
+
+```bash
+spark-sql --packages org.apache.iceberg:iceberg-spark-runtime-3.5:{{ icebergVersion }} \
+    --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+    --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog \
+    --conf spark.sql.catalog.spark_catalog.type=hive \
+    --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.local.type=hadoop \
+    --conf spark.sql.catalog.local.warehouse=$PWD/warehouse
+```
+
+## Configuring Catalogs
+
+Iceberg catalogs enable SQL commands to manage tables and load them by name. Configure catalogs using properties under `spark.sql.catalog.(catalog_name)`.
+
+### Hadoop Catalog Example
+
+Create a path-based catalog named `local` for tables under a warehouse directory:
+
+```properties
+spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.local.type=hadoop
+spark.sql.catalog.local.warehouse=/path/to/warehouse
+```
+
+### Hive Metastore Catalog
+
+Configure a Hive-based catalog with session catalog support:
+
+```properties
+spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkSessionCatalog
+spark.sql.catalog.spark_catalog.type=hive
+```
+
+## Creating Your First Table
+
+<Steps>
+  <Step title="Create a Simple Table">
+    Use the `CREATE TABLE` command to create your first Iceberg table:
+    
+    <CodeGroup>
+    ```sql Basic Table
+    CREATE TABLE local.db.table (
+        id bigint,
+        data string
+    ) USING iceberg;
+    ```
+    
+    ```sql Partitioned Table
+    CREATE TABLE local.db.logs (
+        id bigint,
+        data string,
+        category string,
+        ts timestamp
+    ) USING iceberg
+    PARTITIONED BY (category, days(ts));
+    ```
+    </CodeGroup>
+  </Step>
+  
+  <Step title="Insert Data">
+    Add data to your table using `INSERT INTO`:
+    
+    <CodeGroup>
+    ```sql Insert Values
+    INSERT INTO local.db.table 
+    VALUES (1, 'a'), (2, 'b'), (3, 'c');
+    ```
+    
+    ```sql Insert from Query
+    INSERT INTO local.db.table 
+    SELECT id, data FROM source 
+    WHERE length(data) = 1;
+    ```
+    </CodeGroup>
+  </Step>
+  
+  <Step title="Query Data">
+    Read data from your table:
+    
+    ```sql
+    SELECT count(1) as count, data
+    FROM local.db.table
+    GROUP BY data;
+    ```
+  </Step>
+</Steps>
+
+## Row-Level Updates
+
+Iceberg adds row-level SQL updates to Spark:
+
+### MERGE INTO
+
+Update existing rows and insert new ones in a single operation:
+
+```sql
+MERGE INTO local.db.table t 
+USING (SELECT * FROM updates) u 
+ON t.id = u.id
+WHEN MATCHED THEN UPDATE SET t.data = u.data
+WHEN NOT MATCHED THEN INSERT *;
+```
+
+### DELETE FROM
+
+Remove rows matching a condition:
+
+```sql
+DELETE FROM local.db.table 
+WHERE ts < '2024-01-01';
+```
+
+## Writing with DataFrames
+
+Iceberg supports the v2 DataFrame write API for programmatic writes:
+
+<CodeGroup>
+```scala Append
+val data: DataFrame = ...
+data.writeTo("local.db.table").append()
+```
+
+```scala Overwrite
+val data: DataFrame = ...
+data.writeTo("local.db.table").overwritePartitions()
+```
+
+```scala Create Table
+val data: DataFrame = ...
+data.writeTo("local.db.table")
+    .partitionedBy($"category", days($"ts"))
+    .create()
+```
+</CodeGroup>
+
+<Warning>
+The old v1 `write` API is supported but **not recommended**. Use the v2 `writeTo` API instead.
+</Warning>
+
+## Reading with DataFrames
+
+Load tables by name using `spark.table`:
+
+```scala
+val df = spark.table("local.db.table")
+df.count()
+```
+
+## Inspecting Tables
+
+Use metadata tables to inspect table history and snapshots:
+
+### View Snapshots
+
+```sql
+SELECT * FROM local.db.table.snapshots;
+```
+
+<CodeGroup>
+```text Output
++-------------------------+----------------+-----------+-----------+----------------------------------------------------+
+| committed_at            | snapshot_id    | parent_id | operation | manifest_list                                      |
++-------------------------+----------------+-----------+-----------+----------------------------------------------------+
+| 2019-02-08 03:29:51.215 | 57897183625154 | null      | append    | s3://.../table/metadata/snap-57897183625154-1.avro |
++-------------------------+----------------+-----------+-----------+----------------------------------------------------+
+```
+</CodeGroup>
+
+### View History
+
+```sql
+SELECT * FROM local.db.table.history;
+```
+
+### View Files
+
+```sql
+SELECT * FROM local.db.table.files;
+```
+
+## Type Conversion
+
+### Spark to Iceberg
+
+When creating tables or writing data, Spark types are automatically converted:
+
+| Spark Type | Iceberg Type | Notes |
+|------------|--------------|-------|
+| boolean | boolean | |
+| byte, short, integer | integer | Promoted to integer |
+| long | long | |
+| float | float | |
+| double | double | |
+| decimal | decimal | |
+| timestamp | timestamp with timezone | |
+| timestamp_ntz | timestamp without timezone | |
+| string, char, varchar | string | |
+| binary | binary | Assertion on length for fixed type |
+
+<Info>
+Numeric types support promotion during writes. For example, you can write Spark `integer` to Iceberg `long`.
+</Info>
+
+### Iceberg to Spark
+
+When reading from Iceberg tables:
+
+| Iceberg Type | Spark Type | Supported |
+|--------------|-----------|----------|
+| timestamp with timezone | timestamp | ✔️ |
+| timestamp without timezone | timestamp_ntz | ✔️ |
+| uuid | string | ✔️ |
+| time | - | ❌ Not supported |
+| variant | variant | ✔️ Spark 4.0+ |
+| unknown | null | ✔️ Spark 4.0+ |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="DDL Commands" icon="database" href="/engines/spark/ddl">
+    Learn about CREATE, ALTER, and DROP operations
+  </Card>
+  <Card title="Query Data" icon="magnifying-glass" href="/engines/spark/queries">
+    Explore SELECT queries and metadata tables
+  </Card>
+  <Card title="Write Data" icon="pen-to-square" href="/engines/spark/writes">
+    Master INSERT INTO and MERGE INTO operations
+  </Card>
+  <Card title="Procedures" icon="gears" href="/engines/spark/procedures">
+    Maintain tables with stored procedures
+  </Card>
+</CardGroup>

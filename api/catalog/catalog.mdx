@@ -1,0 +1,267 @@
+---
+title: Catalog
+description: API for table create, drop, and load operations in Apache Iceberg
+---
+
+The `Catalog` interface provides the core API for managing Iceberg tables, including creation, deletion, and loading operations.
+
+## Overview
+
+A Catalog is the primary entry point for working with Iceberg tables. It provides methods to:
+- List, create, load, and drop tables
+- Rename tables
+- Start transactions for table operations
+- Register existing tables
+
+## Interface
+
+```java
+public interface Catalog
+```
+
+## Core Methods
+
+### name()
+
+Returns the name for this catalog.
+
+```java
+default String name()
+```
+
+**Returns:** This catalog's name
+
+### listTables()
+
+Returns all the identifiers under a namespace.
+
+```java
+List<TableIdentifier> listTables(Namespace namespace)
+```
+
+**Parameters:**
+- `namespace` - A namespace to list tables from
+
+**Returns:** A list of identifiers for tables
+
+**Throws:** `NoSuchNamespaceException` if the namespace is not found
+
+### createTable()
+
+Creates a new table with the specified schema and configuration.
+
+```java
+default Table createTable(
+    TableIdentifier identifier,
+    Schema schema,
+    PartitionSpec spec,
+    String location,
+    Map<String, String> properties)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+- `schema` - A schema
+- `spec` - A partition spec
+- `location` - A location for the table; leave null if unspecified
+- `properties` - A string map of table properties
+
+**Returns:** A Table instance
+
+**Throws:** `AlreadyExistsException` if the table already exists
+
+### loadTable()
+
+Loads an existing table.
+
+```java
+Table loadTable(TableIdentifier identifier)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+
+**Returns:** Instance of Table implementation referred by the identifier
+
+**Throws:** `NoSuchTableException` if the table does not exist
+
+### dropTable()
+
+Drops a table and optionally deletes all data and metadata files.
+
+```java
+boolean dropTable(TableIdentifier identifier, boolean purge)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+- `purge` - If true, delete all data and metadata files in the table
+
+**Returns:** true if the table was dropped, false if the table did not exist
+
+### renameTable()
+
+Renames a table.
+
+```java
+void renameTable(TableIdentifier from, TableIdentifier to)
+```
+
+**Parameters:**
+- `from` - Identifier of the table to rename
+- `to` - New table name
+
+**Throws:**
+- `NoSuchTableException` if the from table does not exist
+- `AlreadyExistsException` if the to table already exists
+
+### tableExists()
+
+Checks whether a table exists.
+
+```java
+default boolean tableExists(TableIdentifier identifier)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+
+**Returns:** true if the table exists, false otherwise
+
+### registerTable()
+
+Registers a table with the catalog if it does not exist.
+
+```java
+default Table registerTable(
+    TableIdentifier identifier,
+    String metadataFileLocation)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+- `metadataFileLocation` - The location of a metadata file
+
+**Returns:** A Table instance
+
+**Throws:** `AlreadyExistsException` if the table already exists in the catalog
+
+## Transaction Methods
+
+### newCreateTableTransaction()
+
+Starts a transaction to create a table.
+
+```java
+default Transaction newCreateTableTransaction(
+    TableIdentifier identifier,
+    Schema schema,
+    PartitionSpec spec,
+    String location,
+    Map<String, String> properties)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+- `schema` - A schema
+- `spec` - A partition spec
+- `location` - A location for the table; leave null if unspecified
+- `properties` - A string map of table properties
+
+**Returns:** A Transaction to create the table
+
+**Throws:** `AlreadyExistsException` if the table already exists
+
+### newReplaceTableTransaction()
+
+Starts a transaction to replace a table.
+
+```java
+default Transaction newReplaceTableTransaction(
+    TableIdentifier identifier,
+    Schema schema,
+    PartitionSpec spec,
+    String location,
+    Map<String, String> properties,
+    boolean orCreate)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+- `schema` - A schema
+- `spec` - A partition spec
+- `location` - A location for the table; leave null if unspecified
+- `properties` - A string map of table properties
+- `orCreate` - Whether to create the table if not exists
+
+**Returns:** A Transaction to replace the table
+
+**Throws:** `NoSuchTableException` if the table doesn't exist and orCreate is false
+
+## Table Builder
+
+### buildTable()
+
+Instantiates a builder to either create a table or start a create/replace transaction.
+
+```java
+default TableBuilder buildTable(
+    TableIdentifier identifier,
+    Schema schema)
+```
+
+**Parameters:**
+- `identifier` - A table identifier
+- `schema` - A schema
+
+**Returns:** The builder to create a table or start a create/replace transaction
+
+## Example Usage
+
+```java
+// Load a catalog
+Catalog catalog = ...
+
+// List tables in a namespace
+Namespace ns = Namespace.of("db");
+List<TableIdentifier> tables = catalog.listTables(ns);
+
+// Create a table
+TableIdentifier id = TableIdentifier.of("db", "table");
+Schema schema = new Schema(
+    required(1, "id", Types.LongType.get()),
+    optional(2, "data", Types.StringType.get())
+);
+
+Table table = catalog.createTable(id, schema);
+
+// Load a table
+Table loaded = catalog.loadTable(id);
+
+// Drop a table
+boolean dropped = catalog.dropTable(id, true);
+```
+
+## TableBuilder Interface
+
+The `TableBuilder` interface provides a fluent API for building tables:
+
+```java
+interface TableBuilder {
+    TableBuilder withPartitionSpec(PartitionSpec spec);
+    TableBuilder withSortOrder(SortOrder sortOrder);
+    TableBuilder withLocation(String location);
+    TableBuilder withProperties(Map<String, String> properties);
+    TableBuilder withProperty(String key, String value);
+    Table create();
+    Transaction createTransaction();
+    Transaction replaceTransaction();
+    Transaction createOrReplaceTransaction();
+}
+```
+
+## See Also
+
+- [Namespace](/api/catalog/namespace) - Namespace representation in a catalog
+- [TableIdentifier](/api/catalog/table-identifier) - Table identification in a catalog
+- [Table](/api/table) - Table API reference

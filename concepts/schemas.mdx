@@ -1,0 +1,307 @@
+---
+title: "Schemas"
+description: "Schema structure, types, and management in Apache Iceberg tables"
+---
+
+Iceberg schemas define the structure of table data with strong typing and support for complex nested structures. Unlike traditional table formats, Iceberg tracks columns by unique IDs rather than names or positions, enabling safe schema evolution.
+
+## Schema Structure
+
+A schema is a list of named columns with types. The top-level schema is a struct type, and each field has:
+- **Name** - the column name
+- **Field ID** - a unique integer ID (never reused)
+- **Type** - primitive or nested type
+- **Required/Optional** - whether values can be null
+- **Doc** - optional documentation string
+- **Default values** - initial and write defaults (v3+)
+
+```java
+// Example: Creating a schema with the Java API
+Schema schema = new Schema(
+  required(1, "id", Types.LongType.get()),
+  optional(2, "data", Types.StringType.get()),
+  required(3, "timestamp", Types.TimestampType.withoutZone()),
+  optional(4, "metadata", Types.StructType.of(
+    optional(5, "key", Types.StringType.get()),
+    optional(6, "value", Types.StringType.get())
+  ))
+);
+```
+
+## Primitive Types
+
+Iceberg supports a rich set of primitive types:
+
+<AccordionGroup>
+  <Accordion title="Numeric Types">
+    - **boolean** - True or false
+    - **int** - 32-bit signed integers (can promote to long)
+    - **long** - 64-bit signed integers
+    - **float** - 32-bit IEEE 754 floating point (can promote to double)
+    - **double** - 64-bit IEEE 754 floating point
+    - **decimal(P,S)** - Fixed-point decimal with precision P and scale S (max precision 38)
+  </Accordion>
+
+  <Accordion title="Date and Time Types">
+    - **date** - Calendar date without timezone or time
+    - **time** - Time of day without date or timezone (microsecond precision)
+    - **timestamp** - Timestamp without timezone (microsecond precision)
+    - **timestamptz** - Timestamp with timezone (stored as UTC, microsecond precision)
+    - **timestamp_ns** - Timestamp without timezone (nanosecond precision, v3+)
+    - **timestamptz_ns** - Timestamp with timezone (nanosecond precision, v3+)
+  </Accordion>
+
+  <Accordion title="String and Binary Types">
+    - **string** - Arbitrary-length UTF-8 encoded character sequences
+    - **uuid** - Universally unique identifiers (stored as 16-byte fixed)
+    - **fixed(L)** - Fixed-length byte array of length L
+    - **binary** - Arbitrary-length byte array
+  </Accordion>
+
+  <Accordion title="Special Types (v3+)">
+    - **variant** - Semi-structured JSON-like data with flexible schema
+    - **geometry(C)** - Geospatial features with linear edge interpolation
+    - **geography(C, A)** - Geospatial features with specified edge algorithm
+    - **unknown** - Placeholder type for undetermined columns (must be optional)
+  </Accordion>
+</AccordionGroup>
+
+## Nested Types
+
+Iceberg supports three nested types:
+
+### Structs
+
+A struct is a tuple of typed, named fields:
+
+```java
+// Example: Nested struct type
+Types.StructType.of(
+  required(1, "latitude", Types.DoubleType.get()),
+  required(2, "longitude", Types.DoubleType.get()),
+  optional(3, "elevation", Types.FloatType.get())
+)
+```
+
+Each field in a struct:
+- Has a unique field ID
+- Can be required or optional
+- Can be any type (including other structs)
+- Can have a default value (v3+)
+
+### Lists
+
+A list is a collection of values with a single element type:
+
+```java
+// Example: List type
+Types.ListType.ofOptional(
+  4, // element field ID
+  Types.StringType.get() // element type
+)
+```
+
+List elements:
+- Have a unique field ID for the element
+- Can be required or optional
+- Can be any type (including nested types)
+
+### Maps
+
+A map is a collection of key-value pairs:
+
+```java
+// Example: Map type
+Types.MapType.ofOptional(
+  5, // key field ID
+  6, // value field ID  
+  Types.StringType.get(), // key type
+  Types.IntegerType.get() // value type
+)
+```
+
+Map keys are always required, while values can be optional. Both keys and values can be any type.
+
+## Field IDs: The Key to Evolution
+
+<Warning>
+Field IDs are the most important concept in Iceberg schemas. Understanding them is critical for safe schema evolution.
+</Warning>
+
+Every field in an Iceberg schema has a unique integer ID that:
+- **Never changes** - the ID follows the field through renames
+- **Is never reused** - even if a field is deleted, its ID is retired
+- **Identifies the column in data files** - not the name or position
+
+This design enables safe schema evolution:
+
+```java
+// Example: Evolution maintains field IDs
+// Original schema
+Schema v1 = new Schema(
+  required(1, "id", Types.LongType.get()),
+  optional(2, "name", Types.StringType.get())
+);
+
+// Evolved schema - field 2 renamed, field 3 added
+Schema v2 = new Schema(
+  required(1, "id", Types.LongType.get()),
+  optional(2, "customer_name", Types.StringType.get()), // renamed but same ID
+  optional(3, "email", Types.StringType.get()) // new field, new ID
+);
+
+// Field ID 2 is never reused, even if customer_name is later deleted
+```
+
+## Column Projection
+
+Iceberg reads data files using field IDs, not names or positions:
+
+1. **Read the data file's schema** (embedded in Parquet/ORC/Avro)
+2. **Map field IDs** from the read schema to the data file schema
+3. **Project columns** by matching IDs
+4. **Handle missing fields** with defaults or nulls
+
+This means:
+- Renaming columns doesn't require rewriting data
+- Reordering columns is a metadata-only operation
+- Adding columns doesn't affect existing files
+- Dropping columns doesn't break old data files
+
+## Type Promotion
+
+Iceberg supports safe type promotions:
+
+| From Type | To Type (v1, v2) | To Type (v3+) |
+|-----------|------------------|---------------|
+| int | long | long |
+| float | double | double |
+| decimal(P,S) | decimal(P',S) where P' > P | decimal(P',S) where P' > P |
+| date | - | timestamp, timestamp_ns |
+| unknown | - | any type |
+
+<Note>
+Promotion from `timestamp` to `timestamptz` is **not allowed** as it would change the semantic meaning of values.
+</Note>
+
+## Default Values (v3+)
+
+Format version 3 adds support for default values:
+
+```java
+// Example: Adding fields with defaults
+Schema schema = new Schema(
+  required(1, "id", Types.LongType.get()),
+  optional(2, "status", Types.StringType.get()),
+  optional(3, "created_at", Types.TimestampType.withoutZone())
+);
+
+// Evolve schema to add a field with a default
+table.updateSchema()
+  .addColumn("priority", Types.IntegerType.get(), "Task priority")
+  .setDefault("priority", 0) // default for new and existing rows
+  .commit();
+```
+
+Two types of defaults:
+- **initial-default** - Used for rows written before the field was added
+- **write-default** - Used for new rows if the writer doesn't supply a value
+
+## Identifier Fields
+
+Schemas can declare which fields identify unique entities (though uniqueness is not enforced):
+
+```java
+// Example: Setting identifier fields
+Schema schema = new Schema(
+  required(1, "user_id", Types.LongType.get()),
+  optional(2, "email", Types.StringType.get()),
+  optional(3, "name", Types.StringType.get()),
+  ImmutableSet.of(1) // user_id is the identifier
+);
+```
+
+Identifier fields:
+- Must be primitive types (not float or double)
+- Cannot be optional
+- Cannot be nested in maps or lists
+- Define row "sameness" for merge operations
+
+## Reserved Field IDs
+
+Field IDs above 2147483447 are reserved for metadata columns:
+
+| Field ID | Name | Type | Description |
+|----------|------|------|-------------|
+| 2147483646 | _file | string | Path of the file containing the row |
+| 2147483645 | _pos | long | Row position in the source file |
+| 2147483644 | _deleted | boolean | Whether the row is deleted |
+| 2147483543 | _change_type | string | Change type in changelog (INSERT, DELETE, etc.) |
+| 2147483540 | _row_id | long | Unique row identifier for lineage (v3+) |
+
+These metadata columns can be projected in queries:
+
+```sql
+-- Query metadata columns
+SELECT id, data, _file, _pos
+FROM my_table
+WHERE id = 123;
+```
+
+## Schema Evolution
+
+Iceberg supports comprehensive schema evolution. See the [Evolution guide](/concepts/evolution) for details on:
+- Adding, dropping, and renaming columns
+- Reordering fields
+- Type promotion
+- Modifying nested structures
+- Default value management
+
+## Working with Schemas
+
+<CardGroup cols={2}>
+  <Card title="View Current Schema" icon="eye">
+    ```java
+    Table table = catalog.loadTable(tableId);
+    Schema schema = table.schema();
+    System.out.println(schema);
+    ```
+  </Card>
+  
+  <Card title="Access Schema History" icon="clock-rotate-left">
+    ```java
+    Map<Integer, Schema> schemas = table.schemas();
+    for (Schema historical : schemas.values()) {
+      System.out.println("Schema " + historical.schemaId());
+    }
+    ```
+  </Card>
+  
+  <Card title="Find Fields by Name" icon="magnifying-glass">
+    ```java
+    Schema schema = table.schema();
+    Types.NestedField field = schema.findField("customer.email");
+    System.out.println("Field ID: " + field.fieldId());
+    ```
+  </Card>
+  
+  <Card title="Evolve Schema" icon="arrow-up">
+    ```java
+    table.updateSchema()
+      .addColumn("new_column", Types.StringType.get())
+      .renameColumn("old_name", "new_name")
+      .commit();
+    ```
+  </Card>
+</CardGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Schema Evolution" icon="code-branch" href="/concepts/evolution">
+    Learn how to safely evolve schemas over time
+  </Card>
+  <Card title="Table Format" icon="table" href="/concepts/table-format">
+    Understand how schemas fit into the overall table format
+  </Card>
+</CardGroup>

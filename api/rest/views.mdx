@@ -1,0 +1,687 @@
+---
+title: View Endpoints
+description: REST API endpoints for managing views in Apache Iceberg catalogs
+---
+
+# View API
+
+View endpoints provide operations for creating, reading, updating, and deleting Iceberg views through the REST Catalog API.
+
+## List Views
+
+List all views in a namespace.
+
+```http
+GET /v1/{prefix}/namespaces/{namespace}/views
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier (multi-part namespaces use `%1F` separator)
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="pageToken" type="string" optional>
+  Pagination token from a previous response
+</ParamField>
+
+<ParamField query="pageSize" type="integer" optional>
+  Maximum number of views to return
+</ParamField>
+
+### Response
+
+<ResponseField name="identifiers" type="array" required>
+  List of view identifiers
+  
+  <Expandable title="items">
+    <ResponseField name="namespace" type="array">
+      Namespace parts
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      View name
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="next-page-token" type="string" optional>
+  Token for next page of results
+</ResponseField>
+
+### Example
+
+```bash
+curl -X GET "https://catalog.example.com/v1/production/namespaces/analytics/views" \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "identifiers": [
+    {
+      "namespace": ["analytics"],
+      "name": "monthly_revenue"
+    },
+    {
+      "namespace": ["analytics"],
+      "name": "top_customers"
+    }
+  ]
+}
+```
+
+---
+
+## Create View
+
+Create a new view in the specified namespace.
+
+```http
+POST /v1/{prefix}/namespaces/{namespace}/views
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+### Request Body
+
+<ParamField body="name" type="string" required>
+  View name
+</ParamField>
+
+<ParamField body="location" type="string" optional>
+  View location. If not provided, a location will be generated.
+</ParamField>
+
+<ParamField body="schema" type="object" required>
+  View schema definition
+</ParamField>
+
+<ParamField body="view-version" type="object" required>
+  Initial view version with query definition
+</ParamField>
+
+<ParamField body="properties" type="object" optional>
+  View properties
+</ParamField>
+
+### Response
+
+<ResponseField name="metadata-location" type="string" required>
+  Location of view metadata file
+</ResponseField>
+
+<ResponseField name="metadata" type="object" required>
+  Complete view metadata
+</ResponseField>
+
+<ResponseField name="config" type="object" optional>
+  Additional configuration for the view
+</ResponseField>
+
+### Example
+
+```bash
+curl -X POST "https://catalog.example.com/v1/production/namespaces/analytics/views" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "monthly_revenue",
+    "schema": {
+      "type": "struct",
+      "fields": [
+        {"id": 1, "name": "month", "type": "date", "required": true},
+        {"id": 2, "name": "revenue", "type": "decimal(10,2)", "required": true}
+      ]
+    },
+    "view-version": {
+      "version-id": 1,
+      "timestamp-ms": 1672531200000,
+      "schema-id": 0,
+      "default-namespace": ["analytics"],
+      "summary": {"engine": "spark"},
+      "representations": [
+        {
+          "type": "sql",
+          "sql": "SELECT date_trunc(\'month\', sale_date) as month, SUM(amount) as revenue FROM sales GROUP BY 1",
+          "dialect": "spark"
+        }
+      ]
+    },
+    "properties": {
+      "comment": "Monthly revenue summary"
+    }
+  }'
+```
+
+---
+
+## Load View
+
+Load view metadata from the catalog.
+
+```http
+GET /v1/{prefix}/namespaces/{namespace}/views/{view}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+<ParamField path="view" type="string" required>
+  View name
+</ParamField>
+
+### Query Parameters
+
+<ParamField query="referenced-by" type="string" optional>
+  Comma-separated list of view identifiers referencing this view
+</ParamField>
+
+### Response
+
+<ResponseField name="metadata-location" type="string" required>
+  Location of view metadata file
+</ResponseField>
+
+<ResponseField name="metadata" type="object" required>
+  Complete view metadata including schema, versions, and properties
+</ResponseField>
+
+<ResponseField name="config" type="object" optional>
+  Additional configuration and credentials for accessing the view
+</ResponseField>
+
+### Example
+
+```bash
+curl -X GET "https://catalog.example.com/v1/production/namespaces/analytics/views/monthly_revenue" \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "metadata-location": "s3://bucket/warehouse/analytics/monthly_revenue/metadata/v1.metadata.json",
+  "metadata": {
+    "view-uuid": "fa6506c3-7681-40c8-86dc-e36561f83385",
+    "format-version": 1,
+    "location": "s3://bucket/warehouse/analytics/monthly_revenue",
+    "schemas": [
+      {
+        "schema-id": 0,
+        "type": "struct",
+        "fields": [
+          {"id": 1, "name": "month", "type": "date", "required": true},
+          {"id": 2, "name": "revenue", "type": "decimal(10,2)", "required": true}
+        ]
+      }
+    ],
+    "current-version-id": 1,
+    "versions": [...],
+    "version-log": [...],
+    "properties": {
+      "comment": "Monthly revenue summary"
+    }
+  }
+}
+```
+
+---
+
+## Replace View
+
+Update an existing view with a new version.
+
+```http
+POST /v1/{prefix}/namespaces/{namespace}/views/{view}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+<ParamField path="view" type="string" required>
+  View name
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Request Body
+
+<ParamField body="requirements" type="array" optional>
+  Assertions that must be true before applying updates
+</ParamField>
+
+<ParamField body="updates" type="array" required>
+  Changes to apply to view metadata
+</ParamField>
+
+### Response
+
+<ResponseField name="metadata-location" type="string" required>
+  Location of new metadata file
+</ResponseField>
+
+<ResponseField name="metadata" type="object" required>
+  Updated view metadata
+</ResponseField>
+
+### Example
+
+```bash
+curl -X POST "https://catalog.example.com/v1/production/namespaces/analytics/views/monthly_revenue" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requirements": [
+      {
+        "type": "assert-view-uuid",
+        "uuid": "fa6506c3-7681-40c8-86dc-e36561f83385"
+      }
+    ],
+    "updates": [
+      {
+        "action": "add-view-version",
+        "view-version": {
+          "version-id": 2,
+          "schema-id": 0,
+          "timestamp-ms": 1672617600000,
+          "representations": [
+            {
+              "type": "sql",
+              "sql": "SELECT date_trunc(\'month\', sale_date) as month, SUM(amount) as revenue FROM sales WHERE region = \'US\' GROUP BY 1",
+              "dialect": "spark"
+            }
+          ]
+        }
+      },
+      {
+        "action": "set-current-view-version",
+        "version-id": 2
+      }
+    ]
+  }'
+```
+
+<Note>
+View updates use requirements and updates similar to table commits. Requirements ensure the view hasn't changed since it was last read.
+</Note>
+
+---
+
+## Check View Exists
+
+Check if a view exists without loading its metadata.
+
+```http
+HEAD /v1/{prefix}/namespaces/{namespace}/views/{view}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+<ParamField path="view" type="string" required>
+  View name
+</ParamField>
+
+### Response
+
+No response body. Status code indicates existence.
+
+### Example
+
+```bash
+curl -I "https://catalog.example.com/v1/production/namespaces/analytics/views/monthly_revenue" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Success:**
+```http
+HTTP/1.1 204 No Content
+```
+
+**Not Found:**
+```http
+HTTP/1.1 404 Not Found
+```
+
+---
+
+## Drop View
+
+Delete a view from the catalog.
+
+```http
+DELETE /v1/{prefix}/namespaces/{namespace}/views/{view}
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+<ParamField path="view" type="string" required>
+  View name
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Response
+
+No response body on success.
+
+### Example
+
+```bash
+curl -X DELETE "https://catalog.example.com/v1/production/namespaces/analytics/views/monthly_revenue" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Success:**
+```http
+HTTP/1.1 204 No Content
+```
+
+---
+
+## Rename View
+
+Rename a view or move it to a different namespace.
+
+```http
+POST /v1/{prefix}/views/rename
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Request Body
+
+<ParamField body="source" type="object" required>
+  Current view identifier
+  
+  <Expandable title="properties">
+    <ParamField body="namespace" type="array" required>
+      Current namespace
+    </ParamField>
+    <ParamField body="name" type="string" required>
+      Current view name
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="destination" type="object" required>
+  New view identifier
+  
+  <Expandable title="properties">
+    <ParamField body="namespace" type="array" required>
+      New namespace
+    </ParamField>
+    <ParamField body="name" type="string" required>
+      New view name
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Response
+
+No response body on success.
+
+### Example
+
+```bash
+curl -X POST "https://catalog.example.com/v1/production/views/rename" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "namespace": ["analytics"],
+      "name": "monthly_revenue"
+    },
+    "destination": {
+      "namespace": ["analytics", "reports"],
+      "name": "revenue_by_month"
+    }
+  }'
+```
+
+<Note>
+Moving views across namespaces is valid but not all servers support it. Check the 406 response if cross-namespace moves fail.
+</Note>
+
+---
+
+## Register View
+
+Register an existing view using its metadata file location.
+
+```http
+POST /v1/{prefix}/namespaces/{namespace}/register-view
+```
+
+### Path Parameters
+
+<ParamField path="prefix" type="string" required>
+  Optional prefix for multi-tenant deployments
+</ParamField>
+
+<ParamField path="namespace" type="string" required>
+  Namespace identifier
+</ParamField>
+
+### Headers
+
+<ParamField header="Idempotency-Key" type="string (uuid)" optional>
+  UUIDv7 for idempotent request handling
+</ParamField>
+
+### Request Body
+
+<ParamField body="name" type="string" required>
+  View name to register
+</ParamField>
+
+<ParamField body="metadata-location" type="string" required>
+  Location of existing view metadata file
+</ParamField>
+
+### Response
+
+Same as Load View response.
+
+### Example
+
+```bash
+curl -X POST "https://catalog.example.com/v1/production/namespaces/analytics/register-view" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "imported_revenue",
+    "metadata-location": "s3://external-bucket/views/revenue/metadata/v3.metadata.json"
+  }'
+```
+
+---
+
+## Status Codes
+
+### Success
+- `200 OK` - Request successful with response body
+- `204 No Content` - Request successful without response body
+
+### Client Errors
+- `400 Bad Request` - Invalid request format
+- `401 Unauthorized` - Authentication required
+- `403 Forbidden` - Not authorized
+- `404 Not Found` - View or namespace does not exist
+- `406 Not Acceptable` - Operation not supported
+- `409 Conflict` - View already exists or commit requirements failed
+- `419 Authentication Timeout` - Authentication expired
+
+### Server Errors
+- `500 Internal Server Error` - Commit state unknown
+- `502 Bad Gateway` - Gateway error, commit state unknown
+- `503 Service Unavailable` - Service temporarily unavailable
+- `504 Gateway Timeout` - Timeout, commit state unknown
+
+## View Versions
+
+Views support versioning to track changes over time:
+
+- Each update creates a new view version
+- Versions contain SQL representations and metadata
+- The current version determines the view's behavior
+- Version history is maintained in metadata
+
+### View Version Structure
+
+```json
+{
+  "version-id": 1,
+  "timestamp-ms": 1672531200000,
+  "schema-id": 0,
+  "summary": {"engine": "spark"},
+  "default-namespace": ["analytics"],
+  "representations": [
+    {
+      "type": "sql",
+      "sql": "SELECT ...",
+      "dialect": "spark"
+    }
+  ]
+}
+```
+
+## Common Patterns
+
+### Create View with Multiple Representations
+
+```bash
+curl -X POST ".../namespaces/analytics/views" \
+  -d '{
+    "name": "revenue_view",
+    "schema": {...},
+    "view-version": {
+      "representations": [
+        {
+          "type": "sql",
+          "sql": "SELECT date, SUM(amount) FROM sales GROUP BY date",
+          "dialect": "spark"
+        },
+        {
+          "type": "sql",
+          "sql": "SELECT date, SUM(amount) FROM sales GROUP BY 1",
+          "dialect": "trino"
+        }
+      ]
+    }
+  }'
+```
+
+### Update View Query
+
+```bash
+# Load current view
+curl -X GET ".../views/revenue_view"
+# Note current version: 1, uuid: abc-123
+
+# Create new version
+curl -X POST ".../views/revenue_view" \
+  -d '{
+    "requirements": [
+      {"type": "assert-view-uuid", "uuid": "abc-123"}
+    ],
+    "updates": [
+      {
+        "action": "add-view-version",
+        "view-version": {
+          "version-id": 2,
+          "representations": [
+            {"type": "sql", "sql": "<updated query>", "dialect": "spark"}
+          ]
+        }
+      },
+      {"action": "set-current-view-version", "version-id": 2}
+    ]
+  }'
+```
+
+### View References
+
+When loading a view that references other views or tables:
+
+```bash
+curl -X GET ".../views/quarterly_revenue?referenced-by=analytics%1Fannual_summary" \
+  -H "Authorization: Bearer <token>"
+```
+
+This helps track view dependency chains for access control and lineage.
+
+## Best Practices
+
+1. **Version management**: Keep view version history manageable
+2. **Multiple dialects**: Provide SQL representations for different engines
+3. **Schema evolution**: Update schema when view output changes
+4. **Dependencies**: Track view dependencies using `referenced-by`
+5. **Idempotency**: Use idempotency keys for safe retries
+
+## Related
+
+- [Namespace Endpoints](/api/rest/namespaces) - Namespace management
+- [Table Endpoints](/api/rest/tables) - Table management
+- [View Metadata Spec](/spec/view-metadata) - View metadata format
+- [REST API Overview](/api/rest/overview) - API overview

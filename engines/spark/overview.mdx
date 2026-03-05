@@ -1,0 +1,131 @@
+---
+title: 'Spark Integration Overview'
+description: 'Apache Spark integration for Apache Iceberg tables'
+---
+
+## Overview
+
+Spark is currently the most feature-rich compute engine for Iceberg operations. Apache Iceberg uses Spark's DataSourceV2 API for data source and catalog implementations, providing comprehensive support for table management, queries, and writes.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Full DDL Support" icon="database">
+    Create, alter, and manage Iceberg tables with complete SQL DDL operations
+  </Card>
+  <Card title="Advanced Queries" icon="magnifying-glass">
+    Time travel, metadata tables, and efficient scan planning
+  </Card>
+  <Card title="Row-Level Operations" icon="pen-to-square">
+    MERGE INTO, UPDATE, and DELETE operations for data modification
+  </Card>
+  <Card title="Streaming Support" icon="water">
+    Structured Streaming reads and writes with incremental processing
+  </Card>
+</CardGroup>
+
+## Compatibility
+
+Iceberg integrates with Apache Spark through the DataSourceV2 API, with different levels of support across Spark versions:
+
+| Feature | Availability | Notes |
+|---------|-------------|-------|
+| SQL INSERT INTO | ✔️ All versions | Requires ANSI assignment policy (default since Spark 3.0) |
+| SQL MERGE INTO | ✔️ All versions | Requires Iceberg Spark extensions |
+| SQL DELETE FROM | ✔️ All versions | Row-level deletes require extensions |
+| SQL UPDATE | ✔️ All versions | Requires Iceberg Spark extensions |
+| DataFrame writes | ✔️ All versions | DataFrameWriterV2 API recommended |
+| Structured Streaming | ✔️ All versions | Append and complete modes |
+
+## Type Compatibility
+
+Iceberg automatically converts between Spark and Iceberg types:
+
+### Spark to Iceberg Type Mapping
+
+| Spark Type | Iceberg Type | Notes |
+|------------|--------------|-------|
+| boolean | boolean | |
+| byte, short, integer | integer | Promotion supported |
+| long | long | |
+| float | float | |
+| double | double | |
+| decimal | decimal | |
+| date | date | |
+| timestamp | timestamp with timezone | |
+| timestamp_ntz | timestamp without timezone | |
+| string, char, varchar | string | |
+| binary | binary | Can write to fixed type with length assertion |
+| struct | struct | |
+| array | list | |
+| map | map | |
+
+### Iceberg to Spark Type Mapping
+
+| Iceberg Type | Spark Type | Supported |
+|--------------|-----------|----------|
+| boolean | boolean | ✔️ |
+| integer | integer | ✔️ |
+| long | long | ✔️ |
+| float | float | ✔️ |
+| double | double | ✔️ |
+| decimal | decimal | ✔️ |
+| date | date | ✔️ |
+| time | - | ❌ Not supported |
+| timestamp with timezone | timestamp | ✔️ |
+| timestamp without timezone | timestamp_ntz | ✔️ |
+| string | string | ✔️ |
+| uuid | string | ✔️ |
+| fixed | binary | ✔️ |
+| binary | binary | ✔️ |
+| struct | struct | ✔️ |
+| list | array | ✔️ |
+| map | map | ✔️ |
+| variant | variant | ✔️ (Spark 4.0+) |
+| unknown | null | ✔️ (Spark 4.0+) |
+
+## Getting Started
+
+<Steps>
+  <Step title="Add Iceberg Runtime">
+    Include the Iceberg Spark runtime in your Spark environment:
+    
+    ```bash
+    spark-shell --packages org.apache.iceberg:iceberg-spark-runtime-3.5:{{ icebergVersion }}
+    ```
+  </Step>
+  
+  <Step title="Configure Catalogs">
+    Set up Iceberg catalogs in your Spark configuration:
+    
+    ```properties
+    spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog
+    spark.sql.catalog.my_catalog.type=hive
+    ```
+  </Step>
+  
+  <Step title="Enable SQL Extensions">
+    Add Iceberg SQL extensions for advanced features:
+    
+    ```properties
+    spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/engines/spark/getting-started">
+    Set up your first Iceberg table with Spark
+  </Card>
+  <Card title="DDL Operations" icon="code" href="/engines/spark/ddl">
+    Learn about CREATE, ALTER, and DROP commands
+  </Card>
+  <Card title="Query Data" icon="search" href="/engines/spark/queries">
+    Execute queries and explore metadata tables
+  </Card>
+  <Card title="Write Data" icon="pen" href="/engines/spark/writes">
+    Insert, update, and merge data into tables
+  </Card>
+</CardGroup>

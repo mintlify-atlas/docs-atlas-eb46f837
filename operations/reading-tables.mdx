@@ -1,0 +1,364 @@
+---
+title: Reading Tables
+description: Learn how to read data from Apache Iceberg tables using various scan types and filtering options
+---
+
+Iceberg provides powerful APIs for reading table data with support for filtering, projection, time travel, and incremental scans. This guide covers the different scan types and how to use them effectively.
+
+## Table Scans
+
+The most common way to read an Iceberg table is using a `TableScan`. A table scan reads the current snapshot of the table and supports various refinements.
+
+### Basic Table Scan
+
+```java
+Table table = ...; // Load your table
+TableScan scan = table.newScan();
+
+// Plan files to read
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+  for (FileScanTask task : tasks) {
+    // Process each file scan task
+  }
+}
+```
+
+### Projection (Column Selection)
+
+Limit the columns read to improve performance:
+
+```java
+TableScan scan = table.newScan()
+    .select("id", "data", "category");
+```
+
+You can also project using a schema:
+
+```java
+Schema projection = new Schema(
+    required(1, "id", Types.LongType.get()),
+    optional(2, "data", Types.StringType.get())
+);
+
+TableScan scan = table.newScan()
+    .project(projection);
+```
+
+### Filtering Data
+
+Apply row-level filters to reduce the data scanned:
+
+```java
+import static org.apache.iceberg.expressions.Expressions.*;
+
+TableScan scan = table.newScan()
+    .filter(and(
+        greaterThan("id", 100),
+        equal("category", "premium")
+    ));
+```
+
+<Note>
+Filters are pushed down to skip entire files and row groups when possible, dramatically improving query performance.
+</Note>
+
+Common filter expressions:
+
+```java
+// Equality
+filter(equal("status", "active"))
+
+// Comparisons
+filter(greaterThan("timestamp", 1609459200000L))
+filter(lessThanOrEqual("price", 99.99))
+
+// String operations
+filter(startsWith("name", "test"))
+
+// NULL checks
+filter(isNull("deleted_at"))
+filter(notNull("email"))
+
+// Set membership
+filter(in("region", "us-east", "us-west", "eu-west"))
+filter(notIn("status", "deleted", "archived"))
+
+// Combining filters
+filter(and(
+    equal("category", "electronics"),
+    greaterThan("price", 100)
+))
+
+filter(or(
+    equal("priority", "high"),
+    equal("priority", "critical")
+))
+```
+
+### Case Sensitivity
+
+Control whether column name matching is case-sensitive:
+
+```java
+TableScan scan = table.newScan()
+    .caseSensitive(false)
+    .select("ID", "Data"); // Matches "id", "data"
+```
+
+## Time Travel Queries
+
+Iceberg maintains table history through snapshots, enabling queries as of a specific point in time.
+
+### Read a Specific Snapshot
+
+```java
+// Get snapshot by ID
+long snapshotId = 12345678L;
+TableScan scan = table.newScan()
+    .useSnapshot(snapshotId);
+```
+
+### Read as of Timestamp
+
+```java
+// Read table as it existed 7 days ago
+long sevenDaysAgo = System.currentTimeMillis() - (7 * 24 * 60 * 60 * 1000L);
+TableScan scan = table.newScan()
+    .asOfTime(sevenDaysAgo);
+```
+
+### Read Using Named References
+
+```java
+// Use a named tag or branch
+TableScan scan = table.newScan()
+    .useRef("audit-snapshot-2024-01-01");
+```
+
+<Warning>
+Time travel queries depend on snapshot retention. Ensure snapshots are not expired before the desired timestamp.
+</Warning>
+
+## Batch Scans
+
+Batch scans are optimized for reading large amounts of data in batch processing jobs:
+
+```java
+BatchScan batchScan = table.newBatchScan();
+
+// Apply filters and projections
+batchScan = batchScan
+    .filter(greaterThan("timestamp", startTime))
+    .select("id", "event_type", "payload");
+
+// Plan and execute
+try (CloseableIterable<FileScanTask> tasks = batchScan.planFiles()) {
+  for (FileScanTask task : tasks) {
+    // Process files
+  }
+}
+```
+
+## Incremental Scans
+
+Read only the data that changed between two snapshots.
+
+### Incremental Append Scan
+
+Read new rows appended between snapshots:
+
+```java
+IncrementalAppendScan incrementalScan = table.newIncrementalAppendScan();
+
+// Read changes from snapshot 100 to snapshot 200
+incrementalScan = incrementalScan
+    .fromSnapshotExclusive(100L)
+    .toSnapshot(200L);
+
+// Apply filters if needed
+incrementalScan = incrementalScan
+    .filter(equal("category", "orders"));
+
+try (CloseableIterable<FileScanTask> tasks = incrementalScan.planFiles()) {
+  for (FileScanTask task : tasks) {
+    // Process new data
+  }
+}
+```
+
+### Incremental Changelog Scan
+
+Read all changes (inserts, updates, deletes) between snapshots:
+
+```java
+IncrementalChangelogScan changelogScan = table.newIncrementalChangelogScan();
+
+changelogScan = changelogScan
+    .fromSnapshotExclusive(lastProcessedSnapshot)
+    .toSnapshot(table.currentSnapshot().snapshotId());
+
+try (CloseableIterable<ChangelogScanTask> tasks = changelogScan.planFiles()) {
+  for (ChangelogScanTask task : tasks) {
+    // Process changelog entries
+    // Task includes change type: INSERT, DELETE, UPDATE_BEFORE, UPDATE_AFTER
+  }
+}
+```
+
+<Note>
+Incremental scans are ideal for building streaming pipelines and incremental ETL processes.
+</Note>
+
+## Advanced Scan Options
+
+### Planning with Custom Executor
+
+Use a custom thread pool for scan planning:
+
+```java
+ExecutorService executor = Executors.newFixedThreadPool(10);
+
+TableScan scan = table.newScan()
+    .planWith(executor);
+```
+
+### Include Column Statistics
+
+Load column statistics with each data file:
+
+```java
+TableScan scan = table.newScan()
+    .includeColumnStats();
+
+// Or for specific columns only
+TableScan scan = table.newScan()
+    .includeColumnStats(Arrays.asList("id", "timestamp"));
+```
+
+### Ignore Residual Filters
+
+Skip row-level filtering (filter files only):
+
+```java
+TableScan scan = table.newScan()
+    .filter(equal("date", "2024-01-01"))
+    .ignoreResiduals(); // Files filtered, but not rows within files
+```
+
+### Table Properties Override
+
+Override table properties for a specific scan:
+
+```java
+TableScan scan = table.newScan()
+    .option("read.split.target-size", "134217728") // 128 MB
+    .option("read.split.open-file-cost", "4194304"); // 4 MB
+```
+
+## Planning Tasks
+
+<Steps>
+
+<Step title="Plan individual files">
+Plan tasks where each task reads a single file:
+
+```java
+try (CloseableIterable<FileScanTask> fileTasks = scan.planFiles()) {
+  for (FileScanTask task : fileTasks) {
+    // Each task represents one file
+    String filePath = task.file().location();
+    long fileSize = task.file().fileSizeInBytes();
+  }
+}
+```
+</Step>
+
+<Step title="Plan balanced task groups">
+Plan tasks that combine small files and split large files:
+
+```java
+try (CloseableIterable<CombinedScanTask> taskGroups = scan.planTasks()) {
+  for (CombinedScanTask taskGroup : taskGroups) {
+    // Each task group may contain multiple files
+    for (FileScanTask fileTask : taskGroup.files()) {
+      // Process file
+    }
+  }
+}
+```
+</Step>
+
+</Steps>
+
+<Note>
+Balanced task groups improve parallelism by creating evenly-sized tasks based on `read.split.target-size`.
+</Note>
+
+## Metrics Reporting
+
+Attach custom metrics reporters to track scan performance:
+
+```java
+MetricsReporter reporter = new CustomMetricsReporter();
+
+TableScan scan = table.newScan()
+    .metricsReporter(reporter)
+    .filter(equal("category", "electronics"));
+
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+  // Scan metrics automatically reported
+}
+```
+
+See [Metrics Reporting](/operations/metrics-reporting) for more details on collecting scan metrics.
+
+## Complete Example
+
+```java
+import org.apache.iceberg.*;
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.TableIdentifier;
+import org.apache.iceberg.io.CloseableIterable;
+import static org.apache.iceberg.expressions.Expressions.*;
+
+public class ReadTableExample {
+  public static void main(String[] args) {
+    // Load catalog and table
+    Catalog catalog = ...;
+    Table table = catalog.loadTable(TableIdentifier.of("db", "events"));
+    
+    // Create filtered, projected scan
+    TableScan scan = table.newScan()
+        .filter(and(
+            greaterThan("timestamp", 1704067200000L), // After 2024-01-01
+            equal("event_type", "purchase")
+        ))
+        .select("user_id", "product_id", "amount", "timestamp")
+        .option("read.split.target-size", "134217728");
+    
+    // Execute scan
+    try (CloseableIterable<CombinedScanTask> tasks = scan.planTasks()) {
+      for (CombinedScanTask task : tasks) {
+        System.out.println("Processing task with " + task.files().size() + " files");
+        
+        for (FileScanTask fileTask : task.files()) {
+          // Read and process file
+          System.out.println("  File: " + fileTask.file().location());
+          System.out.println("  Records: " + fileTask.file().recordCount());
+        }
+      }
+    } catch (Exception e) {
+      e.printStackTrace();
+    }
+  }
+}
+```
+
+## Best Practices
+
+1. **Use projection**: Only read the columns you need to reduce I/O
+2. **Apply filters early**: Push down predicates to skip entire files
+3. **Leverage time travel**: Access historical data without maintaining separate copies
+4. **Monitor metrics**: Track scan performance to identify optimization opportunities
+5. **Use incremental scans**: For streaming and CDC use cases, process only changed data
+6. **Plan balanced tasks**: Use `planTasks()` for better parallelism in distributed engines

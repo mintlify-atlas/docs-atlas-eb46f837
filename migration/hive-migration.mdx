@@ -1,0 +1,184 @@
+---
+title: "Hive Migration"
+description: "Migrate Apache Hive tables to Iceberg format"
+---
+
+Apache Hive supports ORC, Parquet, and Avro file formats that can be migrated to Iceberg. When migrating data to an Iceberg table, which provides versioning and transactional updates, only the most recent data files need to be migrated.
+
+## Overview
+
+Iceberg supports all three migration actions for migrating from Hive tables to Iceberg tables:
+- **Snapshot Table**
+- **Migrate Table**
+- **Add Files**
+
+<Info>
+Since Hive tables do not maintain snapshots, the migration process essentially involves creating a new Iceberg table with the existing schema and committing all data files across all partitions to the new Iceberg table.
+</Info>
+
+After the initial migration, any new data files are added to the new Iceberg table using the Add Files action.
+
+## Enabling Migration from Hive to Iceberg
+
+The Hive table migration actions are supported by the Spark Integration module via Spark Procedures. The procedures are bundled in the Spark runtime jar, which is available in the Iceberg Release Downloads.
+
+## Snapshot Hive Table to Iceberg
+
+To snapshot a Hive table, users can run the following Spark SQL:
+
+```sql
+CALL catalog_name.system.snapshot('db.source', 'db.dest')
+```
+
+<Tip>
+The snapshot action creates a new table with a different name, leaving the source Hive table unchanged. This allows for gradual migration with minimal disruption.
+</Tip>
+
+### Example
+
+```sql
+-- Snapshot a Hive table to a new Iceberg table
+CALL spark_catalog.system.snapshot('analytics.events', 'analytics.events_iceberg');
+```
+
+See [Spark Procedure: snapshot](/spark/procedures#snapshot) for more details.
+
+## Migrate Hive Table To Iceberg
+
+To migrate a Hive table to Iceberg in-place, users can run the following Spark SQL:
+
+```sql
+CALL catalog_name.system.migrate('db.sample')
+```
+
+<Warning>
+The migrate action replaces the source table with an Iceberg table of the same name. All writers must be stopped before running this command.
+</Warning>
+
+### Example
+
+```sql
+-- Migrate a Hive table to Iceberg in-place
+CALL spark_catalog.system.migrate('analytics.events');
+```
+
+See [Spark Procedure: migrate](/spark/procedures#migrate) for more details.
+
+## Add Files From Hive Table to Iceberg
+
+To add data files from a Hive table to a given Iceberg table, users can run the following Spark SQL:
+
+```sql
+CALL spark_catalog.system.add_files(
+  table => 'db.tbl',
+  source_table => 'db.src_tbl'
+)
+```
+
+<Info>
+This is useful for catching up files that were added to the Hive table after the initial migration.
+</Info>
+
+### Example
+
+```sql
+-- Add new files from Hive table to existing Iceberg table
+CALL spark_catalog.system.add_files(
+  table => 'analytics.events_iceberg',
+  source_table => 'analytics.events'
+);
+```
+
+See [Spark Procedure: add_files](/spark/procedures#add_files) for more details.
+
+## Migration Workflow
+
+Here's a typical workflow for migrating Hive tables to Iceberg:
+
+<Steps>
+  <Step title="Prepare for migration">
+    Identify the Hive tables to migrate and ensure you have the necessary permissions and access to both the source and destination catalogs.
+  </Step>
+
+  <Step title="Choose migration strategy">
+    Decide between:
+    - **Snapshot**: Create a new table with a different name (safer, allows gradual migration)
+    - **Migrate**: Replace the existing table in-place (requires downtime)
+  </Step>
+
+  <Step title="Run migration">
+    Execute the appropriate Spark procedure:
+
+    ```sql
+    -- For snapshot
+    CALL spark_catalog.system.snapshot('db.source', 'db.dest');
+    
+    -- OR for in-place migration
+    CALL spark_catalog.system.migrate('db.table');
+    ```
+  </Step>
+
+  <Step title="Verify migration">
+    Query both tables to verify the data was migrated correctly:
+
+    ```sql
+    -- Compare row counts
+    SELECT COUNT(*) FROM db.source;
+    SELECT COUNT(*) FROM db.dest;
+    
+    -- Verify schema
+    DESCRIBE EXTENDED db.dest;
+    ```
+  </Step>
+
+  <Step title="Handle incremental updates">
+    If new data is added to the Hive table after migration, use the `add_files` procedure:
+
+    ```sql
+    CALL spark_catalog.system.add_files(
+      table => 'db.dest',
+      source_table => 'db.source'
+    );
+    ```
+  </Step>
+
+  <Step title="Switch workloads">
+    Gradually switch read and write workloads to the new Iceberg table.
+  </Step>
+</Steps>
+
+## Supported File Formats
+
+Iceberg supports migrating Hive tables with the following file formats:
+
+<CardGroup cols={3}>
+  <Card title="ORC" icon="file">
+    Optimized Row Columnar format
+  </Card>
+  <Card title="Parquet" icon="file">
+    Apache Parquet columnar format
+  </Card>
+  <Card title="Avro" icon="file">
+    Apache Avro row-based format
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Test migration on a copy first">
+    Before migrating production tables, test the migration process on a copy or subset of your data to ensure everything works as expected.
+  </Accordion>
+
+  <Accordion title="Monitor table size and partition count">
+    Large tables with many partitions may take longer to migrate. Monitor the migration progress and plan accordingly.
+  </Accordion>
+
+  <Accordion title="Use snapshot for gradual migration">
+    For production tables with active workloads, use the snapshot approach to minimize disruption. This allows you to verify the migration before switching over.
+  </Accordion>
+
+  <Accordion title="Clean up old Hive tables">
+    After successful migration and verification, clean up the old Hive tables to free up storage space. Ensure you have backups before deletion.
+  </Accordion>
+</AccordionGroup>

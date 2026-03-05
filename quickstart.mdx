@@ -1,80 +1,481 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Quick Start Guide"
+description: "Get started with Apache Iceberg quickly. Learn how to add dependencies, create tables, and perform basic read/write operations."
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will help you get started with Apache Iceberg quickly. You'll learn how to add Iceberg to your project, create your first table, and perform basic operations.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+The latest version of Iceberg can be found on the [releases page](https://iceberg.apache.org/releases). This guide uses examples compatible with Iceberg 1.0+.
 </Note>
+
+## Installation
+
+<Steps>
+  <Step title="Add Dependencies">
+    Add Iceberg to your project using Maven or Gradle.
+
+    <CodeGroup>
+    ```xml Maven
+    <dependencies>
+      <!-- Core Iceberg API -->
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-core</artifactId>
+        <version>1.7.1</version>
+      </dependency>
+      
+      <!-- For Parquet file format -->
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-parquet</artifactId>
+        <version>1.7.1</version>
+      </dependency>
+      
+      <!-- For Hive Metastore catalog -->
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-hive-metastore</artifactId>
+        <version>1.7.1</version>
+      </dependency>
+    </dependencies>
+    ```
+
+    ```gradle Gradle
+    dependencies {
+        // Core Iceberg API
+        implementation 'org.apache.iceberg:iceberg-core:1.7.1'
+        
+        // For Parquet file format
+        implementation 'org.apache.iceberg:iceberg-parquet:1.7.1'
+        
+        // For Hive Metastore catalog
+        implementation 'org.apache.iceberg:iceberg-hive-metastore:1.7.1'
+    }
+    ```
+    </CodeGroup>
+
+    <Info>
+    **Module guide:**
+    - `iceberg-core` - The core API and implementations (required)
+    - `iceberg-parquet` - For Parquet file format support
+    - `iceberg-orc` - For ORC file format support
+    - `iceberg-hive-metastore` - For Hive Metastore catalog
+    - `iceberg-data` - For direct JVM data access
+    </Info>
+  </Step>
+
+  <Step title="Choose a Catalog">
+    Iceberg uses catalogs to manage tables. Choose the catalog that fits your environment:
+
+    - **Hadoop Catalog** - File-based catalog for HDFS or S3
+    - **Hive Metastore** - Uses existing Hive Metastore
+    - **AWS Glue** - For AWS environments
+    - **Nessie** - Git-like data catalog
+    - **REST Catalog** - HTTP-based catalog service
+  </Step>
+
+  <Step title="Create Your First Table">
+    Follow the examples below to create a table.
+  </Step>
+</Steps>
+
+## Using Spark (Recommended for Getting Started)
+
+Spark is the most feature-rich engine for Iceberg and the easiest way to get started.
+
+<Steps>
+  <Step title="Start Spark Shell with Iceberg">
+    Launch Spark with the Iceberg runtime package:
+
+    ```bash
+    spark-shell --packages org.apache.iceberg:iceberg-spark-runtime-3.5:1.7.1
+    ```
+
+    Or for `spark-sql`:
+
+    ```bash
+    spark-sql --packages org.apache.iceberg:iceberg-spark-runtime-3.5:1.7.1 \
+        --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+        --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
+        --conf spark.sql.catalog.local.type=hadoop \
+        --conf spark.sql.catalog.local.warehouse=$PWD/warehouse
+    ```
+
+    <Info>
+    Replace `3.5` with your Spark version (e.g., `3.3`, `3.4`, `3.5`).
+    </Info>
+  </Step>
+
+  <Step title="Create a Table">
+    Create your first Iceberg table using SQL:
+
+    ```sql
+    CREATE TABLE local.db.users (
+        id bigint,
+        name string,
+        email string,
+        created_at timestamp
+    ) USING iceberg;
+    ```
+
+    Or create a partitioned table:
+
+    ```sql
+    CREATE TABLE local.db.events (
+        event_id bigint,
+        user_id bigint,
+        event_type string,
+        event_time timestamp,
+        payload string
+    ) USING iceberg
+    PARTITIONED BY (days(event_time), event_type);
+    ```
+  </Step>
+
+  <Step title="Insert Data">
+    Insert data using standard SQL:
+
+    ```sql
+    INSERT INTO local.db.users 
+    VALUES 
+        (1, 'Alice', 'alice@example.com', current_timestamp()),
+        (2, 'Bob', 'bob@example.com', current_timestamp()),
+        (3, 'Charlie', 'charlie@example.com', current_timestamp());
+    ```
+
+    Or insert from another table:
+
+    ```sql
+    INSERT INTO local.db.users 
+    SELECT id, name, email, timestamp 
+    FROM source_table 
+    WHERE active = true;
+    ```
+  </Step>
+
+  <Step title="Query Data">
+    Query your Iceberg table:
+
+    ```sql
+    SELECT * FROM local.db.users WHERE name LIKE 'A%';
+    ```
+
+    Use time travel to query historical data:
+
+    ```sql
+    -- Query as of a timestamp
+    SELECT * FROM local.db.users 
+    TIMESTAMP AS OF '2024-01-01 10:00:00';
+    
+    -- Query a specific snapshot
+    SELECT * FROM local.db.users 
+    VERSION AS OF 5678901234;
+    ```
+
+    View table history:
+
+    ```sql
+    SELECT * FROM local.db.users.snapshots;
+    ```
+  </Step>
+
+  <Step title="Update and Merge Data">
+    Iceberg supports row-level updates and merges:
+
+    ```sql
+    -- Update rows
+    UPDATE local.db.users 
+    SET email = 'newemail@example.com' 
+    WHERE id = 1;
+
+    -- Delete rows
+    DELETE FROM local.db.users 
+    WHERE created_at < '2023-01-01';
+
+    -- Merge (upsert) data
+    MERGE INTO local.db.users t
+    USING updates u ON t.id = u.id
+    WHEN MATCHED THEN 
+      UPDATE SET t.email = u.email, t.name = u.name
+    WHEN NOT MATCHED THEN 
+      INSERT *;
+    ```
+  </Step>
+</Steps>
+
+## Using the Java API
+
+For programmatic access, use the Iceberg Java API.
+
+<Steps>
+  <Step title="Initialize a Catalog">
+    Choose and initialize a catalog:
+
+    <CodeGroup>
+    ```java Hadoop Catalog
+    import org.apache.hadoop.conf.Configuration;
+    import org.apache.iceberg.hadoop.HadoopCatalog;
+
+    Configuration conf = new Configuration();
+    String warehousePath = "hdfs://host:8020/warehouse";
+    HadoopCatalog catalog = new HadoopCatalog(conf, warehousePath);
+    ```
+
+    ```java Hive Catalog
+    import org.apache.iceberg.hive.HiveCatalog;
+    import java.util.HashMap;
+    import java.util.Map;
+
+    HiveCatalog catalog = new HiveCatalog();
+    
+    Map<String, String> properties = new HashMap<>();
+    properties.put("warehouse", "/path/to/warehouse");
+    properties.put("uri", "thrift://localhost:9083");
+    
+    catalog.initialize("hive", properties);
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Define a Schema">
+    Create a schema for your table:
+
+    ```java
+    import org.apache.iceberg.Schema;
+    import org.apache.iceberg.types.Types;
+
+    Schema schema = new Schema(
+        Types.NestedField.required(1, "id", Types.LongType.get()),
+        Types.NestedField.required(2, "name", Types.StringType.get()),
+        Types.NestedField.optional(3, "email", Types.StringType.get()),
+        Types.NestedField.required(4, "created_at", 
+            Types.TimestampType.withZone())
+    );
+    ```
+
+    <Info>
+    Type IDs must be unique within the schema. Iceberg automatically reassigns IDs when creating tables to ensure uniqueness.
+    </Info>
+  </Step>
+
+  <Step title="Define Partitioning">
+    Create a partition spec:
+
+    ```java
+    import org.apache.iceberg.PartitionSpec;
+
+    // Unpartitioned table
+    PartitionSpec spec = PartitionSpec.unpartitioned();
+
+    // Or partition by day and identity
+    PartitionSpec spec = PartitionSpec.builderFor(schema)
+        .day("created_at")
+        .identity("email")
+        .build();
+    ```
+
+    <Tip>
+    Partition transforms include: `identity`, `bucket[N]`, `truncate[L]`, `year`, `month`, `day`, and `hour`.
+    </Tip>
+  </Step>
+
+  <Step title="Create the Table">
+    Create the table using the catalog:
+
+    ```java
+    import org.apache.iceberg.Table;
+    import org.apache.iceberg.catalog.TableIdentifier;
+
+    TableIdentifier name = TableIdentifier.of("db", "users");
+    Table table = catalog.createTable(name, schema, spec);
+    
+    System.out.println("Created table: " + table.location());
+    ```
+  </Step>
+
+  <Step title="Write Data">
+    Append data files to the table:
+
+    ```java
+    import org.apache.iceberg.DataFile;
+    import org.apache.iceberg.DataFiles;
+
+    // Create a data file (simplified example)
+    DataFile dataFile = DataFiles.builder(spec)
+        .withPath("/path/to/data-file.parquet")
+        .withFileSizeInBytes(1024)
+        .withRecordCount(100)
+        .build();
+
+    // Append to table
+    table.newAppend()
+        .appendFile(dataFile)
+        .commit();
+    ```
+
+    <Warning>
+    This is a simplified example. In practice, you would write data using a file writer or compute engine like Spark.
+    </Warning>
+  </Step>
+
+  <Step title="Read Data">
+    Scan and read table data:
+
+    ```java
+    import org.apache.iceberg.TableScan;
+    import org.apache.iceberg.io.CloseableIterable;
+    import org.apache.iceberg.expressions.Expressions;
+    import org.apache.iceberg.FileScanTask;
+
+    // Create a scan
+    TableScan scan = table.newScan()
+        .filter(Expressions.greaterThan("id", 100))
+        .select("id", "name", "email");
+
+    // Get the files to read
+    try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+        for (FileScanTask task : tasks) {
+            System.out.println("File: " + task.file().path());
+            System.out.println("Records: " + task.file().recordCount());
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Common Operations
+
+### Schema Evolution
+
+Modify your table schema without rewriting data:
+
+```java
+// Add a new column
+table.updateSchema()
+    .addColumn("phone", Types.StringType.get())
+    .commit();
+
+// Rename a column
+table.updateSchema()
+    .renameColumn("email", "email_address")
+    .commit();
+
+// Update column type (with compatible type)
+table.updateSchema()
+    .updateColumn("id", Types.LongType.get())
+    .commit();
+```
+
+### Time Travel
+
+Access historical versions of your table:
+
+<CodeGroup>
+```java Java API
+// Read from a specific snapshot
+TableScan scan = table.newScan()
+    .useSnapshot(snapshotId);
+
+// Read as of a timestamp
+TableScan scan = table.newScan()
+    .asOfTime(System.currentTimeMillis() - 3600000); // 1 hour ago
+```
+
+```sql SQL
+-- Query as of timestamp
+SELECT * FROM my_table 
+TIMESTAMP AS OF '2024-01-01 10:00:00';
+
+-- Query specific snapshot
+SELECT * FROM my_table 
+VERSION AS OF 5678901234;
+```
+</CodeGroup>
+
+### Table Maintenance
+
+Keep your tables healthy:
+
+```sql
+-- Expire old snapshots (remove history)
+CALL local.system.expire_snapshots(
+    table => 'db.users',
+    older_than => TIMESTAMP '2024-01-01 00:00:00'
+);
+
+-- Remove orphan files
+CALL local.system.remove_orphan_files(
+    table => 'db.users'
+);
+
+-- Compact small files
+CALL local.system.rewrite_data_files(
+    table => 'db.users'
+);
+```
+
+## Next Steps
+
+Now that you've created your first Iceberg table, explore more advanced features:
+
+<CardGroup cols={2}>
+  <Card title="Java API Deep Dive" icon="code" href="/java-api-quickstart">
+    Learn advanced Java API usage
+  </Card>
+  <Card title="Partitioning" icon="layer-group" href="https://iceberg.apache.org/docs/latest/partitioning">
+    Master hidden partitioning
+  </Card>
+  <Card title="Schema Evolution" icon="diagram-project" href="https://iceberg.apache.org/docs/latest/evolution">
+    Safely evolve table schemas
+  </Card>
+  <Card title="Performance" icon="gauge-high" href="https://iceberg.apache.org/docs/latest/performance">
+    Optimize table performance
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<Accordion title="ClassNotFoundException or NoClassDefFoundError">
+Make sure you have all required dependencies:
+
+- `iceberg-core` for the core API
+- `iceberg-parquet` or `iceberg-orc` for file formats
+- `iceberg-hive-metastore` for Hive catalog
+- Hadoop dependencies for HDFS access
+
+For Spark, use the runtime JAR which includes all dependencies:
+```bash
+--packages org.apache.iceberg:iceberg-spark-runtime-3.5:1.7.1
+```
+</Accordion>
+
+<Accordion title="Connection refused to Hive Metastore">
+Check that:
+
+1. Hive Metastore is running: `netstat -an | grep 9083`
+2. The URI is correct: `thrift://localhost:9083`
+3. Network firewall allows connections
+4. Hive configuration is in the classpath
+</Accordion>
+
+<Accordion title="Table not found">
+Verify:
+
+1. The catalog name is correct
+2. The database/namespace exists
+3. You have permissions to access the table
+4. The table was created successfully
+
+List tables to debug:
+```java
+List<TableIdentifier> tables = catalog.listTables(Namespace.of("db"));
+tables.forEach(System.out::println);
+```
+</Accordion>
+
+<Tip>
+For more help, check the [Apache Iceberg documentation](https://iceberg.apache.org/docs) or join the [community Slack](https://apache-iceberg.slack.com).
+</Tip>

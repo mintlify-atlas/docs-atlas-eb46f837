@@ -1,0 +1,584 @@
+---
+title: 'Schema'
+description: 'Apache Iceberg Schema API reference'
+---
+
+# Schema Class
+
+The `Schema` class represents the structure of a data table in Apache Iceberg. It defines the columns, their types, and identifier fields.
+
+**Package:** `org.apache.iceberg`
+
+## Overview
+
+The `Schema` class provides:
+- Column definitions with field IDs and types
+- Nested field support through struct types
+- Schema evolution tracking with schema IDs
+- Identifier field management (similar to primary keys)
+- Field lookup by name or ID
+- Schema projection and selection
+
+<Info>
+Schema IDs are only populated when reading from/writing to table metadata. Otherwise, the schema ID defaults to 0.
+</Info>
+
+## Constructors
+
+### Schema(List\<NestedField\> columns)
+
+```java
+public Schema(List<NestedField> columns)
+```
+
+Creates a new schema with the given columns.
+
+<ParamField path="columns" type="List<NestedField>" required>
+  List of top-level columns
+</ParamField>
+
+---
+
+### Schema(List\<NestedField\> columns, Set\<Integer\> identifierFieldIds)
+
+```java
+public Schema(List<NestedField> columns, Set<Integer> identifierFieldIds)
+```
+
+Creates a new schema with columns and identifier fields.
+
+<ParamField path="columns" type="List<NestedField>" required>
+  List of top-level columns
+</ParamField>
+
+<ParamField path="identifierFieldIds" type="Set<Integer>" required>
+  Set of field IDs that form the identifier
+</ParamField>
+
+---
+
+### Schema(int schemaId, List\<NestedField\> columns, Set\<Integer\> identifierFieldIds)
+
+```java
+public Schema(int schemaId, List<NestedField> columns, Set<Integer> identifierFieldIds)
+```
+
+Creates a new schema with a specific schema ID.
+
+<ParamField path="schemaId" type="int" required>
+  The schema ID
+</ParamField>
+
+<ParamField path="columns" type="List<NestedField>" required>
+  List of top-level columns
+</ParamField>
+
+<ParamField path="identifierFieldIds" type="Set<Integer>" required>
+  Set of field IDs that form the identifier
+</ParamField>
+
+## Basic Methods
+
+### schemaId()
+
+```java
+public int schemaId()
+```
+
+Returns the schema ID for this schema.
+
+**Returns:** The schema ID (defaults to 0 if not set)
+
+---
+
+### columns()
+
+```java
+public List<NestedField> columns()
+```
+
+Returns a list of the columns (top-level fields) in this schema.
+
+**Returns:** List of NestedField objects
+
+---
+
+### asStruct()
+
+```java
+public StructType asStruct()
+```
+
+Returns the underlying struct type for this schema.
+
+**Returns:** The StructType representation of this schema
+
+---
+
+### highestFieldId()
+
+```java
+public int highestFieldId()
+```
+
+Returns the highest field ID in this schema, including nested fields.
+
+**Returns:** The highest field ID
+
+## Field Lookup
+
+### findField(int id)
+
+```java
+public NestedField findField(int id)
+```
+
+Returns the field identified by the given field ID.
+
+<ParamField path="id" type="int" required>
+  The field ID to look up
+</ParamField>
+
+**Returns:** The field with the given ID, or null if not found
+
+**Example:**
+```java
+NestedField field = schema.findField(1);
+if (field != null) {
+    System.out.println("Field name: " + field.name());
+}
+```
+
+---
+
+### findField(String name)
+
+```java
+public NestedField findField(String name)
+```
+
+Returns a field by name. The name may be a top-level or nested field.
+
+<ParamField path="name" type="String" required>
+  The field name (e.g., "id" or "user.email")
+</ParamField>
+
+**Returns:** The field with the given name, or null if not found
+
+**Example:**
+```java
+NestedField userEmail = schema.findField("user.email");
+```
+
+---
+
+### caseInsensitiveFindField(String name)
+
+```java
+public NestedField caseInsensitiveFindField(String name)
+```
+
+Returns a field by name using case-insensitive matching.
+
+<ParamField path="name" type="String" required>
+  The field name (case-insensitive)
+</ParamField>
+
+**Returns:** The field with the given name, or null if not found
+
+---
+
+### findType(String name)
+
+```java
+public Type findType(String name)
+```
+
+Returns the type of a field identified by name.
+
+<ParamField path="name" type="String" required>
+  The field name
+</ParamField>
+
+**Returns:** The field's Type, or null if not found
+
+---
+
+### findType(int id)
+
+```java
+public Type findType(int id)
+```
+
+Returns the type of a field identified by field ID.
+
+<ParamField path="id" type="int" required>
+  The field ID
+</ParamField>
+
+**Returns:** The field's Type, or null if not found
+
+---
+
+### findColumnName(int id)
+
+```java
+public String findColumnName(int id)
+```
+
+Returns the full column name for the given field ID.
+
+<ParamField path="id" type="int" required>
+  The field ID
+</ParamField>
+
+**Returns:** The full column name (e.g., "user.email"), or null if not found
+
+---
+
+### idToName()
+
+```java
+public Map<Integer, String> idToName()
+```
+
+Returns a map of field IDs to qualified field names.
+
+**Returns:** Map of field ID to qualified field name
+
+## Identifier Fields
+
+<Info>
+Identifier fields in Iceberg are similar to primary keys in relational databases. They consist of a unique set of primitive fields that should uniquely identify a row. However, Iceberg does not enforce uniqueness.
+</Info>
+
+### identifierFieldIds()
+
+```java
+public Set<Integer> identifierFieldIds()
+```
+
+Returns the set of identifier field IDs.
+
+**Returns:** Set of field IDs that form the identifier
+
+**Identifier Field Rules:**
+- Must be primitive types (not structs, lists, or maps)
+- Must be required fields (not optional)
+- Cannot be float or double types
+- Must be at root level or nested in a chain of required structs
+- Can include nested fields (e.g., "user.last_name")
+
+---
+
+### identifierFieldNames()
+
+```java
+public Set<String> identifierFieldNames()
+```
+
+Returns the set of identifier field names.
+
+**Returns:** Set of qualified field names that form the identifier
+
+**Example:**
+```java
+Set<String> identifierNames = schema.identifierFieldNames();
+// Might return: ["user_id", "timestamp"]
+```
+
+## Schema Projection
+
+### select(String... names)
+
+```java
+public Schema select(String... names)
+```
+
+Creates a projection schema for a subset of columns.
+
+<ParamField path="names" type="String..." required>
+  Column names to select
+</ParamField>
+
+**Returns:** A projection schema containing only the selected columns
+
+**Example:**
+```java
+Schema projection = schema.select("id", "name", "user.email");
+```
+
+---
+
+### select(Collection\<String\> names)
+
+```java
+public Schema select(Collection<String> names)
+```
+
+Creates a projection schema for a subset of columns.
+
+<ParamField path="names" type="Collection<String>" required>
+  Column names to select
+</ParamField>
+
+**Returns:** A projection schema containing only the selected columns
+
+---
+
+### caseInsensitiveSelect(String... names)
+
+```java
+public Schema caseInsensitiveSelect(String... names)
+```
+
+Creates a projection schema using case-insensitive column matching.
+
+<ParamField path="names" type="String..." required>
+  Column names to select (case-insensitive)
+</ParamField>
+
+**Returns:** A projection schema containing only the selected columns
+
+---
+
+### caseInsensitiveSelect(Collection\<String\> names)
+
+```java
+public Schema caseInsensitiveSelect(Collection<String> names)
+```
+
+Creates a projection schema using case-insensitive column matching.
+
+<ParamField path="names" type="Collection<String>" required>
+  Column names to select (case-insensitive)
+</ParamField>
+
+**Returns:** A projection schema containing only the selected columns
+
+## Schema Comparison
+
+### sameSchema(Schema anotherSchema)
+
+```java
+public boolean sameSchema(Schema anotherSchema)
+```
+
+Checks whether this schema is equivalent to another schema while ignoring the schema ID.
+
+<ParamField path="anotherSchema" type="Schema" required>
+  The schema to compare with
+</ParamField>
+
+**Returns:** True if the schemas are equivalent (same structure and identifier fields)
+
+## Aliases
+
+### getAliases()
+
+```java
+public Map<String, Integer> getAliases()
+```
+
+Returns the alias map for this schema, if set.
+
+Alias maps are created when translating external schemas (like Avro) to Iceberg format.
+
+**Returns:** Map of column aliases to field IDs, or null if no aliases
+
+---
+
+### aliasToId(String alias)
+
+```java
+public Integer aliasToId(String alias)
+```
+
+Returns the column ID for the given column alias.
+
+<ParamField path="alias" type="String" required>
+  A full column name from the unconverted schema
+</ParamField>
+
+**Returns:** The column ID, or null if the alias doesn't exist
+
+---
+
+### idToAlias(Integer fieldId)
+
+```java
+public String idToAlias(Integer fieldId)
+```
+
+Returns the full column name in the unconverted schema for the given column ID.
+
+<ParamField path="fieldId" type="Integer" required>
+  A column ID in this schema
+</ParamField>
+
+**Returns:** The column alias, or null if not found
+
+## Data Access
+
+### accessorForField(int id)
+
+```java
+public Accessor<StructLike> accessorForField(int id)
+```
+
+Returns an accessor for retrieving data from `StructLike` rows.
+
+<ParamField path="id" type="int" required>
+  The field ID
+</ParamField>
+
+**Returns:** An Accessor to retrieve values from a StructLike row
+
+<Note>
+Accessors do not retrieve data contained in lists or maps.
+</Note>
+
+## Static Methods
+
+### checkCompatibility(Schema schema, int formatVersion)
+
+```java
+public static void checkCompatibility(Schema schema, int formatVersion)
+```
+
+Checks the compatibility of the schema with a format version.
+
+This validates that the schema does not contain types released in later format versions.
+
+<ParamField path="schema" type="Schema" required>
+  The schema to check
+</ParamField>
+
+<ParamField path="formatVersion" type="int" required>
+  The table format version
+</ParamField>
+
+**Throws:** `IllegalStateException` if the schema is incompatible
+
+---
+
+### indexFields(Collection\<Schema\> schemas)
+
+```java
+public static Map<Integer, NestedField> indexFields(Collection<Schema> schemas)
+```
+
+Indexes all fields from multiple schemas.
+
+This method favors field definitions from higher schema IDs to handle type promotions.
+
+<ParamField path="schemas" type="Collection<Schema>" required>
+  The collection of schemas to index
+</ParamField>
+
+**Returns:** Map of field IDs to fields
+
+## Usage Examples
+
+### Creating a Schema
+
+```java
+import org.apache.iceberg.Schema;
+import org.apache.iceberg.types.Types;
+import static org.apache.iceberg.types.Types.NestedField.*;
+
+Schema schema = new Schema(
+    required(1, "id", Types.LongType.get()),
+    optional(2, "data", Types.StringType.get()),
+    required(3, "timestamp", Types.TimestampType.withZone()),
+    optional(4, "user", Types.StructType.of(
+        required(5, "name", Types.StringType.get()),
+        optional(6, "email", Types.StringType.get())
+    ))
+);
+```
+
+### Creating a Schema with Identifier Fields
+
+```java
+import com.google.common.collect.ImmutableSet;
+
+Schema schema = new Schema(
+    Arrays.asList(
+        required(1, "user_id", Types.LongType.get()),
+        required(2, "event_id", Types.LongType.get()),
+        optional(3, "event_type", Types.StringType.get()),
+        required(4, "timestamp", Types.TimestampType.withZone())
+    ),
+    ImmutableSet.of(1, 2)  // user_id and event_id form the identifier
+);
+```
+
+### Looking Up Fields
+
+```java
+Schema schema = ...;
+
+// By name
+NestedField field = schema.findField("user.email");
+if (field != null) {
+    System.out.println("Type: " + field.type());
+}
+
+// By ID
+NestedField fieldById = schema.findField(1);
+String fieldName = schema.findColumnName(1);
+
+// Get type directly
+Type type = schema.findType("timestamp");
+```
+
+### Schema Projection
+
+```java
+Schema schema = ...;
+
+// Select specific columns
+Schema projection = schema.select("id", "timestamp", "user.name");
+
+// Select all columns using wildcard
+Schema allColumns = schema.select("*");
+
+// Case-insensitive selection
+Schema caseInsensitiveProj = schema.caseInsensitiveSelect("ID", "TIMESTAMP");
+```
+
+### Working with Identifier Fields
+
+```java
+Schema schema = ...;
+
+// Get identifier field IDs
+Set<Integer> identifierIds = schema.identifierFieldIds();
+System.out.println("Identifier field IDs: " + identifierIds);
+
+// Get identifier field names
+Set<String> identifierNames = schema.identifierFieldNames();
+System.out.println("Identifier fields: " + identifierNames);
+```
+
+### Comparing Schemas
+
+```java
+Schema schema1 = ...;
+Schema schema2 = ...;
+
+// Check if schemas are equivalent (ignoring schema ID)
+if (schema1.sameSchema(schema2)) {
+    System.out.println("Schemas are equivalent");
+}
+
+// Exact equality (including schema ID)
+if (schema1.equals(schema2)) {
+    System.out.println("Schemas are identical");
+}
+```
+
+## Source Code Reference
+
+Source: `org/apache/iceberg/Schema.java:56`

@@ -1,0 +1,151 @@
+---
+title: Catalog Overview
+description: Understanding Apache Iceberg catalogs and their role in managing table metadata
+---
+
+## What is a Catalog?
+
+A catalog in Apache Iceberg is a fundamental abstraction that provides:
+
+- **Table Discovery**: Listing and locating tables within namespaces
+- **Metadata Management**: Tracking table metadata and schema evolution
+- **Atomic Operations**: Ensuring ACID guarantees for table commits
+- **Namespace Organization**: Hierarchical organization of tables
+
+## How Catalogs Work
+
+Iceberg catalogs implement the `Catalog` interface, which provides core operations:
+
+```java
+public interface Catalog {
+  // Table operations
+  Table createTable(TableIdentifier identifier, Schema schema, PartitionSpec spec);
+  Table loadTable(TableIdentifier identifier);
+  boolean dropTable(TableIdentifier identifier, boolean purge);
+  void renameTable(TableIdentifier from, TableIdentifier to);
+  
+  // Discovery
+  List<TableIdentifier> listTables(Namespace namespace);
+}
+```
+
+## Available Catalog Implementations
+
+Iceberg provides several catalog implementations for different use cases:
+
+<CardGroup cols={2}>
+  <Card title="Hive Metastore" icon="database" href="/catalogs/hive">
+    Use existing Hive metastore infrastructure
+  </Card>
+  
+  <Card title="AWS Glue" icon="aws" href="/catalogs/glue">
+    Native AWS Glue catalog integration
+  </Card>
+  
+  <Card title="JDBC" icon="table" href="/catalogs/jdbc">
+    Store metadata in any relational database
+  </Card>
+  
+  <Card title="Nessie" icon="git-branch" href="/catalogs/nessie">
+    Git-like operations with multi-table transactions
+  </Card>
+  
+  <Card title="REST" icon="server" href="/catalogs/rest">
+    Language-agnostic REST catalog service
+  </Card>
+  
+  <Card title="Hadoop" icon="folder" href="/catalogs/hadoop">
+    File system-based catalog for development
+  </Card>
+</CardGroup>
+
+## Catalog vs TableOperations
+
+While catalogs handle table discovery and high-level operations, **TableOperations** handle the low-level metadata read/write operations:
+
+```java
+public interface TableOperations {
+  TableMetadata current();
+  TableMetadata refresh();
+  void commit(TableMetadata base, TableMetadata metadata);
+  FileIO io();
+}
+```
+
+## Choosing a Catalog
+
+Consider these factors when selecting a catalog:
+
+| Factor | Recommended Catalog |
+|--------|--------------------|
+| **Existing Hive infrastructure** | Hive Metastore Catalog |
+| **AWS ecosystem integration** | Glue Catalog |
+| **High write throughput** | Glue, DynamoDB, or Nessie |
+| **Multi-table transactions** | Nessie Catalog |
+| **Branch/tag support** | Nessie Catalog |
+| **Relational database** | JDBC Catalog |
+| **Cloud-agnostic** | REST Catalog |
+| **Development/testing** | Hadoop Catalog |
+
+## Namespace Management
+
+Catalogs that implement `SupportsNamespaces` provide hierarchical organization:
+
+```java
+// Create a namespace
+catalog.createNamespace(
+  Namespace.of("analytics", "sales"),
+  ImmutableMap.of("owner", "data-team")
+);
+
+// List namespaces
+List<Namespace> namespaces = catalog.listNamespaces();
+
+// Load namespace metadata
+Map<String, String> metadata = catalog.loadNamespaceMetadata(
+  Namespace.of("analytics")
+);
+```
+
+## Catalog Properties
+
+Common catalog properties across implementations:
+
+| Property | Description |
+|----------|-------------|
+| `warehouse` | Root path for table data and metadata |
+| `uri` | Connection URI for the catalog service |
+| `io-impl` | Custom FileIO implementation class |
+| `catalog-impl` | Custom catalog implementation class |
+| `cache-enabled` | Enable metadata caching (default: true) |
+
+## Security Considerations
+
+When working with encrypted tables, catalogs must:
+
+- Store encryption key metadata securely
+- Ensure key rotation is properly tracked
+- Maintain audit logs for key access
+- Implement proper access controls
+
+See the [Encryption documentation](/security/encryption) for detailed requirements.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build Custom Catalog" icon="code" href="/catalogs/custom-catalog">
+    Learn how to implement your own catalog
+  </Card>
+  
+  <Card title="JDBC Catalog" icon="database" href="/catalogs/jdbc">
+    Use relational databases for metadata
+  </Card>
+  
+  <Card title="Nessie Integration" icon="git-branch" href="/catalogs/nessie">
+    Git-like versioning for your data lake
+  </Card>
+  
+  <Card title="Storage Configuration" icon="hard-drive" href="/storage/overview">
+    Configure storage backends
+  </Card>
+</CardGroup>

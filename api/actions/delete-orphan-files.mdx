@@ -1,0 +1,353 @@
+---
+title: DeleteOrphanFiles Action
+description: API reference for the DeleteOrphanFiles action that removes unreferenced files from table storage
+---
+
+# DeleteOrphanFiles
+
+The `DeleteOrphanFiles` action identifies and deletes orphan files in a table that are not reachable by any valid snapshot. This is essential for reclaiming storage space from failed writes and other operations.
+
+## Interface
+
+```java
+public interface DeleteOrphanFiles extends Action<DeleteOrphanFiles, DeleteOrphanFiles.Result>
+```
+
+## Overview
+
+Orphan files can accumulate in a table for several reasons:
+- Failed write operations that didn't commit
+- Interrupted jobs that wrote data but didn't create snapshots
+- Files from unsuccessful transactions
+- Leftover files from testing or development
+
+The DeleteOrphanFiles action:
+- Lists all files in table storage
+- Identifies files not referenced by any snapshot
+- Safely deletes files older than a safety threshold
+- Can process both data files and metadata files
+
+<Warning>
+This operation lists all files in the table location and is expensive for large tables. Use with caution.
+</Warning>
+
+## Methods
+
+### location
+
+Specify a location to scan for orphan files.
+
+```java
+DeleteOrphanFiles location(String location)
+```
+
+**Parameters:**
+- `location` - The path to scan for orphan files
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Scan a specific data directory
+action.location("s3://my-bucket/warehouse/db/table/data");
+```
+
+<Note>
+If not set, the root table location will be scanned, potentially removing both orphan data and metadata files.
+</Note>
+
+### olderThan
+
+Only delete files older than the specified timestamp.
+
+```java
+DeleteOrphanFiles olderThan(long olderThanTimestamp)
+```
+
+**Parameters:**
+- `olderThanTimestamp` - Timestamp in milliseconds (from `System.currentTimeMillis()`)
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Only delete files older than 7 days
+long sevenDaysAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(7);
+action.olderThan(sevenDaysAgo);
+```
+
+<Note>
+Defaults to 3 days ago if not specified. This safety measure prevents deleting files from concurrent operations.
+</Note>
+
+<Warning>
+Never use a very recent timestamp. Always allow sufficient time for concurrent operations to complete.
+</Warning>
+
+### deleteWith
+
+Provide a custom delete function.
+
+```java
+DeleteOrphanFiles deleteWith(Consumer<String> deleteFunc)
+```
+
+**Parameters:**
+- `deleteFunc` - A function that accepts file paths to delete
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Collect orphan files instead of deleting
+Set<String> orphans = new HashSet<>();
+action.deleteWith(orphans::add);
+```
+
+<Tip>
+Use a custom delete function to preview orphan files before actually deleting them.
+</Tip>
+
+### executeDeleteWith
+
+Provide an executor service for parallel deletion.
+
+```java
+DeleteOrphanFiles executeDeleteWith(ExecutorService executorService)
+```
+
+**Parameters:**
+- `executorService` - The executor service for parallel deletes
+
+**Returns:** `this` for method chaining
+
+<Note>
+Only used if a custom delete function is provided or the FileIO doesn't support bulk deletes.
+</Note>
+
+### prefixMismatchMode
+
+Control how to handle files with mismatched authority/scheme.
+
+```java
+DeleteOrphanFiles prefixMismatchMode(PrefixMismatchMode newPrefixMismatchMode)
+```
+
+**Parameters:**
+- `newPrefixMismatchMode` - Mode for handling prefix mismatches
+
+**Returns:** `this` for method chaining
+
+**Modes:**
+- `ERROR` (default) - Throw an exception on mismatch
+- `IGNORE` - Skip files with mismatches
+- `DELETE` - Consider mismatched files as orphans
+
+**Example:**
+```java
+action.prefixMismatchMode(PrefixMismatchMode.IGNORE);
+```
+
+<Warning>
+Use `DELETE` mode only after manually verifying all mismatches. Deleted files cannot be recovered.
+</Warning>
+
+### equalSchemes
+
+Define schemes that should be considered equivalent.
+
+```java
+DeleteOrphanFiles equalSchemes(Map<String, String> newEqualSchemes)
+```
+
+**Parameters:**
+- `newEqualSchemes` - Map of equivalent scheme groups
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Treat s3, s3a, and s3n as equivalent
+action.equalSchemes(Map.of("s3a,s3n", "s3"));
+```
+
+### equalAuthorities
+
+Define authorities that should be considered equivalent.
+
+```java
+DeleteOrphanFiles equalAuthorities(Map<String, String> newEqualAuthorities)
+```
+
+**Parameters:**
+- `newEqualAuthorities` - Map of equivalent authority groups
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Treat different service names as equivalent
+action.equalAuthorities(Map.of("old-service,legacy-service", "new-service"));
+```
+
+## Result
+
+The `Result` interface provides information about deleted files.
+
+### Methods
+
+```java
+interface Result {
+  Iterable<String> orphanFileLocations();
+  long orphanFilesCount();
+}
+```
+
+**orphanFileLocations()**
+
+Returns the paths of all deleted orphan files.
+
+**orphanFilesCount()**
+
+Returns the total number of orphan files deleted.
+
+## Usage Examples
+
+### Basic Orphan File Deletion
+
+```java
+// Delete orphan files older than default (3 days)
+DeleteOrphanFiles.Result result = actions
+  .deleteOrphanFiles(table)
+  .execute();
+
+System.out.println("Deleted " + result.orphanFilesCount() + " orphan files");
+```
+
+### Custom Time Threshold
+
+```java
+// Delete orphan files older than 7 days
+long sevenDaysAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(7);
+
+DeleteOrphanFiles.Result result = actions
+  .deleteOrphanFiles(table)
+  .olderThan(sevenDaysAgo)
+  .execute();
+```
+
+### Preview Mode
+
+```java
+// Preview orphan files without deleting
+List<String> orphanFiles = new ArrayList<>();
+
+DeleteOrphanFiles.Result result = actions
+  .deleteOrphanFiles(table)
+  .deleteWith(orphanFiles::add)
+  .execute();
+
+System.out.println("Found " + orphanFiles.size() + " orphan files:");
+orphanFiles.forEach(System.out::println);
+```
+
+### Specific Location
+
+```java
+// Delete orphans from a specific data directory
+DeleteOrphanFiles.Result result = actions
+  .deleteOrphanFiles(table)
+  .location("s3://my-bucket/warehouse/db/table/data/year=2023")
+  .olderThan(System.currentTimeMillis() - TimeUnit.DAYS.toMillis(14))
+  .execute();
+```
+
+### Handle Scheme Mismatches
+
+```java
+// Handle different S3 schemes
+DeleteOrphanFiles.Result result = actions
+  .deleteOrphanFiles(table)
+  .equalSchemes(Map.of(
+    "s3a,s3n", "s3"
+  ))
+  .prefixMismatchMode(PrefixMismatchMode.IGNORE)
+  .execute();
+
+System.out.println("Deleted " + result.orphanFilesCount() + " files");
+```
+
+### With Progress Tracking
+
+```java
+// Track deletion progress
+AtomicInteger deletedCount = new AtomicInteger(0);
+
+DeleteOrphanFiles.Result result = actions
+  .deleteOrphanFiles(table)
+  .deleteWith(path -> {
+    int count = deletedCount.incrementAndGet();
+    if (count % 100 == 0) {
+      System.out.println("Deleted " + count + " files...");
+    }
+    table.io().deleteFile(path);
+  })
+  .execute();
+
+System.out.println("Total deleted: " + deletedCount.get());
+```
+
+## Safety Considerations
+
+<Warning>
+Always follow these safety practices:
+
+1. **Use appropriate time thresholds**: Never delete recently written files
+2. **Test in preview mode first**: Use a custom delete function to review files
+3. **Understand concurrent operations**: Ensure no writes are in progress
+4. **Handle scheme mismatches carefully**: Use `equalSchemes` and `equalAuthorities` appropriately
+5. **Monitor execution**: Track deleted files for verification
+</Warning>
+
+## Best Practices
+
+1. **Run during maintenance windows**: Minimize concurrent activity
+
+2. **Use conservative time thresholds**: 7+ days for production tables
+
+3. **Preview before deleting**: Always run in preview mode first
+
+4. **Schedule regular cleanup**: Run periodically to prevent accumulation
+
+5. **Monitor storage savings**: Track the result to measure impact
+
+6. **Document scheme equivalences**: Maintain a record of equal schemes/authorities
+
+## Performance Considerations
+
+### Costs
+- Lists all files in the specified location (expensive for large tables)
+- Requires reading table metadata
+- May require multiple API calls to cloud storage
+
+### Optimization Tips
+- Use `location()` to limit scope to specific directories
+- Run during off-peak hours
+- Consider parallel execution for very large tables
+- Use bulk delete APIs when available
+
+## When to Run
+
+Run DeleteOrphanFiles when:
+
+1. **After failed operations**: Jobs that crashed or were cancelled
+2. **Storage costs are high**: Significant orphan file accumulation
+3. **After major migrations**: Moving or restructuring tables
+4. **During maintenance**: Regular cleanup schedules
+5. **Before decommissioning**: Final cleanup before table removal
+
+## Related
+
+- [ExpireSnapshots](/api/actions/expire-snapshots) - Remove old snapshots and their files
+- [RewriteDataFiles](/api/actions/rewrite-data-files) - Optimize data file layout
+- [File Management](/concepts/file-management) - Understanding Iceberg file organization

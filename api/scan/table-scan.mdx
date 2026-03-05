@@ -1,0 +1,292 @@
+---
+title: TableScan
+description: API for configuring table scans in Apache Iceberg
+---
+
+The `TableScan` interface provides a flexible API for configuring and executing scans over Iceberg tables.
+
+## Overview
+
+TableScan extends the base Scan interface and provides methods to configure which snapshot to read, apply filters, and project columns. Scans are immutable - each configuration method returns a new scan instance.
+
+## Interface
+
+```java
+public interface TableScan extends Scan<TableScan, FileScanTask, CombinedScanTask>
+```
+
+## Core Methods
+
+### table()
+
+Returns the table from which this scan loads data.
+
+```java
+Table table()
+```
+
+**Returns:** This scan's table
+
+**Example:**
+```java
+TableScan scan = table.newScan();
+Table sourceTable = scan.table();
+```
+
+### useSnapshot()
+
+Creates a new scan that will use the given snapshot by ID.
+
+```java
+TableScan useSnapshot(long snapshotId)
+```
+
+**Parameters:**
+- `snapshotId` - A snapshot ID
+
+**Returns:** A new scan based on this with the given snapshot ID
+
+**Throws:** `IllegalArgumentException` if the snapshot cannot be found
+
+**Example:**
+```java
+TableScan scan = table.newScan()
+    .useSnapshot(1234567890L);
+```
+
+### useRef()
+
+Creates a new scan that will use the given reference (branch or tag).
+
+```java
+default TableScan useRef(String ref)
+```
+
+**Parameters:**
+- `ref` - A reference name
+
+**Returns:** A new scan based on the given reference
+
+**Throws:** `IllegalArgumentException` if a reference with the given name could not be found
+
+**Example:**
+```java
+TableScan scan = table.newScan()
+    .useRef("prod-branch");
+```
+
+### asOfTime()
+
+Creates a new scan that will use the most recent snapshot as of the given time.
+
+```java
+TableScan asOfTime(long timestampMillis)
+```
+
+**Parameters:**
+- `timestampMillis` - A timestamp in milliseconds since the epoch
+
+**Returns:** A new scan based on this with the current snapshot at the given time
+
+**Throws:** `IllegalArgumentException` if the snapshot cannot be found or time travel is attempted on a tag
+
+**Example:**
+```java
+// Scan table as it was 1 hour ago
+long oneHourAgo = System.currentTimeMillis() - 3600000;
+TableScan scan = table.newScan()
+    .asOfTime(oneHourAgo);
+```
+
+### snapshot()
+
+Returns the snapshot that will be used by this scan.
+
+```java
+Snapshot snapshot()
+```
+
+**Returns:** The Snapshot this scan will use
+
+**Example:**
+```java
+TableScan scan = table.newScan();
+Snapshot snapshot = scan.snapshot();
+System.out.println("Scanning snapshot: " + snapshot.snapshotId());
+```
+
+## Deprecated Methods
+
+### appendsBetween() (Deprecated)
+
+<Warning>
+Deprecated since 1.0.0, will be removed in 2.0.0. Use `Table.newIncrementalAppendScan()` instead.
+</Warning>
+
+Creates a scan to read appended data from one snapshot to another.
+
+```java
+@Deprecated
+default TableScan appendsBetween(long fromSnapshotId, long toSnapshotId)
+```
+
+**Parameters:**
+- `fromSnapshotId` - The last snapshot id read by the user (exclusive)
+- `toSnapshotId` - Read append data up to this snapshot id (inclusive)
+
+**Returns:** A table scan which can read append data in the range
+
+### appendsAfter() (Deprecated)
+
+<Warning>
+Deprecated since 1.0.0, will be removed in 2.0.0. Use `Table.newIncrementalAppendScan()` instead.
+</Warning>
+
+Creates a scan to read appended data from a snapshot to the current snapshot.
+
+```java
+@Deprecated
+default TableScan appendsAfter(long fromSnapshotId)
+```
+
+**Parameters:**
+- `fromSnapshotId` - The last snapshot id read by the user (exclusive)
+
+**Returns:** A table scan which can read append data from the snapshot to current
+
+## Examples
+
+### Basic Table Scan
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.TableScan;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.FileScanTask;
+
+// Create a scan
+Table table = ...;
+TableScan scan = table.newScan();
+
+// Execute the scan
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+    for (FileScanTask task : tasks) {
+        // Process each file scan task
+        System.out.println("File: " + task.file().path());
+    }
+}
+```
+
+### Time Travel Query
+
+```java
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+
+// Scan table as it was 24 hours ago
+long yesterday = Instant.now()
+    .minus(24, ChronoUnit.HOURS)
+    .toEpochMilli();
+
+TableScan historicalScan = table.newScan()
+    .asOfTime(yesterday);
+
+// Process historical data
+try (CloseableIterable<FileScanTask> tasks = historicalScan.planFiles()) {
+    for (FileScanTask task : tasks) {
+        // Read historical data
+    }
+}
+```
+
+### Scanning a Specific Snapshot
+
+```java
+// Get a specific snapshot ID from table history
+long snapshotId = table.history().get(0).snapshotId();
+
+// Create scan for that snapshot
+TableScan scan = table.newScan()
+    .useSnapshot(snapshotId);
+
+Snapshot snapshot = scan.snapshot();
+System.out.println("Reading snapshot: " + snapshot.snapshotId());
+System.out.println("Timestamp: " + snapshot.timestampMillis());
+```
+
+### Scanning a Named Reference
+
+```java
+// Scan a specific branch
+TableScan branchScan = table.newScan()
+    .useRef("audit-branch");
+
+// Scan a tag
+TableScan tagScan = table.newScan()
+    .useRef("v1.0-release");
+```
+
+### Filtered Scan with Projection
+
+```java
+import org.apache.iceberg.expressions.Expressions;
+
+// Create a filtered and projected scan
+TableScan scan = table.newScan()
+    .filter(Expressions.greaterThan("id", 100))
+    .select("id", "name", "created_at");
+
+// Plan and execute
+try (CloseableIterable<FileScanTask> tasks = scan.planFiles()) {
+    tasks.forEach(task -> {
+        // Only files potentially containing id > 100
+        // Only id, name, created_at columns will be read
+    });
+}
+```
+
+### Checking Scan Configuration
+
+```java
+TableScan scan = table.newScan()
+    .useSnapshot(12345L);
+
+// Check which snapshot will be used
+Snapshot snapshot = scan.snapshot();
+if (snapshot != null) {
+    System.out.println("Snapshot ID: " + snapshot.snapshotId());
+    System.out.println("Manifest count: " + snapshot.allManifests(table.io()).size());
+}
+
+// Get source table
+Table sourceTable = scan.table();
+System.out.println("Scanning table: " + sourceTable.name());
+```
+
+## Scan Planning
+
+TableScan extends the Scan interface which provides methods for planning:
+
+- `planFiles()` - Returns an iterable of FileScanTask objects
+- `planTasks()` - Returns an iterable of CombinedScanTask objects (groups of files)
+
+```java
+TableScan scan = table.newScan();
+
+// Plan individual file tasks
+try (CloseableIterable<FileScanTask> fileTasks = scan.planFiles()) {
+    // Process individual files
+}
+
+// Plan combined tasks (multiple files per task)
+try (CloseableIterable<CombinedScanTask> combinedTasks = scan.planTasks()) {
+    // Process groups of files
+}
+```
+
+## See Also
+
+- [BatchScan](/api/scan/batch-scan) - Batch scan API
+- [IncrementalAppendScan](/api/scan/incremental-scan) - Incremental scan for appends
+- [Table](/api/table) - Table API reference
+- [Expressions](/api/expressions) - Filter expressions

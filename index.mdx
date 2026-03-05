@@ -1,97 +1,232 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Apache Iceberg Documentation"
+description: "High-performance open table format for huge analytic datasets with ACID transactions and time travel"
+mode: "custom"
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#0f1117] via-[#1a1d27] to-[#0f1117] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#0f1117] py-20 border-b dark:border-[#27272a] border-gray-200">
+  <div className="max-w-7xl mx-auto px-6 lg:px-8">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+      <div className="text-center lg:text-left">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 dark:text-white mb-6">
+          Apache Iceberg
+        </h1>
+        <p className="text-xl sm:text-2xl text-gray-600 dark:text-gray-300 mb-8 max-w-2xl">
+          High-performance open table format for huge analytic datasets with ACID transactions and time travel
+        </p>
+        <div className="flex flex-wrap gap-4 justify-center lg:justify-start">
+          <a 
+            href="/quickstart"
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-[#d7242a] hover:bg-[#b81f24] text-white font-semibold transition-colors"
+          >
+            Get Started
+            <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </a>
+          <a 
+            href="/api/overview"
+            className="inline-flex items-center px-6 py-3 rounded-lg border border-gray-300 dark:border-white/30 bg-white/10 dark:bg-white/10 text-gray-900 dark:text-white font-semibold hover:bg-white/20 dark:hover:bg-white/20 transition-colors"
+          >
+            API Reference
+          </a>
+        </div>
+      </div>
+      <div className="hidden lg:block">
+        <div className="bg-[#1a1d27] dark:bg-[#1a1d27] border dark:border-[#27272a] border-gray-200 rounded-2xl p-6 shadow-2xl">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div>
+            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+            <div className="w-3 h-3 rounded-full bg-green-500"></div>
+          </div>
+          <pre className="text-sm text-gray-300 dark:text-gray-300 overflow-x-auto">
+{`// Create an Iceberg table
+Table table = catalog.createTable(
+  TableIdentifier.of("db", "events"),
+  schema,
+  PartitionSpec.builderFor(schema)
+    .day("timestamp")
+    .build()
+);
 
-Get your documentation site up and running in minutes.
+// Write data with ACID guarantees
+table.newAppend()
+  .appendFile(dataFile)
+  .commit();`}
+          </pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+    Quick Start
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get up and running with Apache Iceberg in minutes
+  </p>
+  
+  <Steps>
+    <Step title="Add Iceberg to your project">
+      Add the Iceberg dependency to your build configuration:
+      
+      ```xml Maven
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-core</artifactId>
+        <version>1.7.1</version>
+      </dependency>
+      ```
+      
+      ```groovy Gradle
+      dependencies {
+        implementation 'org.apache.iceberg:iceberg-core:1.7.1'
+      }
+      ```
+    </Step>
+    
+    <Step title="Create a catalog">
+      Initialize a catalog to manage your tables:
+      
+      ```java
+      import org.apache.iceberg.catalog.Catalog;
+      import org.apache.hadoop.conf.Configuration;
+      
+      Configuration conf = new Configuration();
+      Catalog catalog = new HadoopCatalog(conf, "warehouse/path");
+      ```
+    </Step>
+    
+    <Step title="Create your first table">
+      Define a schema and create an Iceberg table:
+      
+      ```java
+      import org.apache.iceberg.*;
+      import org.apache.iceberg.types.Types;
+      
+      Schema schema = new Schema(
+        Types.NestedField.required(1, "id", Types.LongType.get()),
+        Types.NestedField.required(2, "data", Types.StringType.get()),
+        Types.NestedField.required(3, "timestamp", Types.TimestampType.withZone())
+      );
+      
+      PartitionSpec spec = PartitionSpec.builderFor(schema)
+        .day("timestamp")
+        .build();
+      
+      Table table = catalog.createTable(
+        TableIdentifier.of("my_db", "my_table"),
+        schema,
+        spec
+      );
+      ```
+      
+      <Note>
+        Iceberg tables support schema evolution, partitioning evolution, and hidden partitioning to prevent user errors.
+      </Note>
+    </Step>
+    
+    <Step title="Query with your favorite engine">
+      Use Iceberg tables with Spark, Flink, Trino, or other query engines:
+      
+      ```sql Spark SQL
+      -- Read from Iceberg table
+      SELECT * FROM my_db.my_table
+      WHERE timestamp >= current_date();
+      
+      -- Time travel to previous snapshot
+      SELECT * FROM my_db.my_table
+      VERSION AS OF 12345678901234567890;
+      ```
+      
+      See the [query engines guide](/engines/spark/overview) for detailed integration instructions.
+    </Step>
+  </Steps>
+</div>
 
-## Make it yours
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+    Why Iceberg?
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Built for reliability, performance, and correctness at massive scale
+  </p>
+  
+  <CardGroup cols={2}>
+    <Card title="ACID Transactions" icon="shield-check" href="/concepts/reliability">
+      Serializable isolation ensures readers never see partial or uncommitted changes. Multiple concurrent writers use optimistic concurrency.
+    </Card>
+    <Card title="Time Travel" icon="clock-rotate-left" href="/concepts/branching">
+      Query historical table snapshots for reproducible analysis and easy version rollback when issues occur.
+    </Card>
+    <Card title="Schema Evolution" icon="code-branch" href="/concepts/evolution">
+      Add, drop, rename, or update columns without side effects. No accidental data deletion or corruption.
+    </Card>
+    <Card title="Hidden Partitioning" icon="layer-group" href="/concepts/partitioning">
+      Users don't need to know about partitioning to get fast queries. Partition layout can evolve as data patterns change.
+    </Card>
+    <Card title="Advanced Filtering" icon="filter" href="/concepts/performance">
+      Data files are pruned using partition and column-level statistics from table metadata. Scan planning is fast.
+    </Card>
+    <Card title="Multi-Engine Support" icon="plug" href="/engines/spark/overview">
+      Works seamlessly with Spark, Flink, Trino, Presto, Hive, and Impala. All engines can safely work with the same tables.
+    </Card>
+  </CardGroup>
+</div>
 
-Design a docs site that looks great and empowers your users.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+    Explore by Topic
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Dive deep into Iceberg's capabilities
+  </p>
+  
+  <CardGroup cols={3}>
+    <Card title="Core Concepts" icon="book-open" href="/concepts/table-format">
+      Understand the Iceberg table format, schemas, partitioning, and reliability guarantees.
+    </Card>
+    <Card title="Table Operations" icon="database" href="/operations/reading-tables">
+      Learn how to read, write, and maintain Iceberg tables efficiently.
+    </Card>
+    <Card title="Query Engines" icon="bolt" href="/engines/spark/overview">
+      Integrate Iceberg with Spark, Flink, Hive, and other processing engines.
+    </Card>
+    <Card title="Catalogs" icon="folder-tree" href="/catalogs/overview">
+      Configure and customize catalogs for table metadata management.
+    </Card>
+    <Card title="REST API" icon="globe" href="/api/rest/overview">
+      Use the REST Catalog API for programmatic table management.
+    </Card>
+    <Card title="Migration" icon="arrows-turn-right" href="/migration/table-migration">
+      Migrate existing tables from Hive or Delta Lake to Iceberg.
+    </Card>
+  </CardGroup>
+</div>
 
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
-
-## Create beautiful pages
-
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-[#1a1d27] dark:bg-[#1a1d27] border dark:border-[#27272a] border-gray-200 rounded-2xl p-8 text-center shadow-lg">
+    <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-4">
+      Ready to Get Started?
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 mb-6 max-w-2xl mx-auto">
+      Follow our quickstart guide to create your first Iceberg table, or explore the API reference to learn about all available features.
+    </p>
+    <div className="flex flex-wrap gap-4 justify-center">
+      <a 
+        href="/quickstart"
+        className="inline-flex items-center px-6 py-3 rounded-lg bg-[#d7242a] hover:bg-[#b81f24] text-white font-semibold transition-colors"
+      >
+        View Quickstart
+      </a>
+      <a 
+        href="/introduction"
+        className="inline-flex items-center px-6 py-3 rounded-lg border border-gray-300 dark:border-white/30 bg-white/10 dark:bg-white/10 text-gray-900 dark:text-white font-semibold hover:bg-white/20 dark:hover:bg-white/20 transition-colors"
+      >
+        Read Introduction
+      </a>
+    </div>
+  </div>
+</div>

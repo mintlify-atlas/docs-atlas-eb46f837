@@ -1,0 +1,133 @@
+---
+title: "View Configuration"
+description: "Configure Iceberg view properties and behavior"
+---
+
+Iceberg views support properties to configure view behavior. This guide covers the available view properties and their default values.
+
+## View Properties
+
+The following table shows the core view properties:
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `write.metadata.compression-codec` | `gzip` | Metadata compression codec: `none` or `gzip` |
+| `version.history.num-entries` | `10` | Controls the number of `versions` to retain |
+| `replace.drop-dialect.allowed` | `false` | Controls whether a SQL dialect is allowed to be dropped during a replace operation |
+
+### Metadata Compression
+
+Control how view metadata is compressed:
+
+```sql
+CREATE VIEW my_view 
+AS SELECT * FROM my_table
+TBLPROPERTIES (
+  'write.metadata.compression-codec'='gzip'
+);
+```
+
+<Tip>
+Using `gzip` compression (the default) reduces metadata file size at the cost of some CPU overhead. Use `none` for faster metadata operations on smaller views.
+</Tip>
+
+### Version History
+
+Configure how many view versions to retain:
+
+```sql
+ALTER VIEW my_view SET TBLPROPERTIES (
+  'version.history.num-entries'='20'
+);
+```
+
+<Info>
+Retaining more versions allows you to query older view definitions but increases metadata storage size.
+</Info>
+
+### Dialect Dropping
+
+Control whether SQL dialects can be dropped during replace operations:
+
+```sql
+CREATE VIEW my_view
+AS SELECT * FROM my_table  
+TBLPROPERTIES (
+  'replace.drop-dialect.allowed'='true'
+);
+```
+
+<Warning>
+Setting `replace.drop-dialect.allowed` to `true` allows dialect definitions to be removed during `CREATE OR REPLACE VIEW` operations, which may break compatibility with certain query engines.
+</Warning>
+
+## View Behavior Properties
+
+These properties control view commit behavior:
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `commit.retry.num-retries` | `4` | Number of times to retry a commit before failing |
+| `commit.retry.min-wait-ms` | `100` | Minimum time in milliseconds to wait before retrying a commit |
+| `commit.retry.max-wait-ms` | `60000` (1 min) | Maximum time in milliseconds to wait before retrying a commit |
+| `commit.retry.total-timeout-ms` | `1800000` (30 min) | Total retry timeout period in milliseconds for a commit |
+
+### Commit Retry Configuration
+
+Configure commit retry behavior for views in high-concurrency environments:
+
+```sql
+CREATE VIEW my_view
+AS SELECT * FROM my_table
+TBLPROPERTIES (
+  'commit.retry.num-retries'='10',
+  'commit.retry.min-wait-ms'='200',
+  'commit.retry.max-wait-ms'='120000',
+  'commit.retry.total-timeout-ms'='3600000'
+);
+```
+
+<CardGroup cols={2}>
+  <Card title="Retry Attempts" icon="rotate">
+    Controls how many times to retry a failed commit operation before giving up
+  </Card>
+  <Card title="Wait Times" icon="clock">
+    Exponential backoff between min and max wait times for commit retries
+  </Card>
+  <Card title="Total Timeout" icon="timer">
+    Maximum total time to spend retrying commits before failing the operation
+  </Card>
+  <Card title="Concurrency" icon="users">
+    Higher retry values help handle concurrent view updates from multiple clients
+  </Card>
+</CardGroup>
+
+## Example: Production View Configuration
+
+Here's a recommended configuration for production views:
+
+```sql
+CREATE VIEW production.analytics.daily_metrics
+AS 
+SELECT 
+  date,
+  SUM(revenue) as total_revenue,
+  COUNT(DISTINCT user_id) as unique_users
+FROM production.events.user_activity
+GROUP BY date
+TBLPROPERTIES (
+  'write.metadata.compression-codec'='gzip',
+  'version.history.num-entries'='30',
+  'replace.drop-dialect.allowed'='false',
+  'commit.retry.num-retries'='8',
+  'commit.retry.min-wait-ms'='100',
+  'commit.retry.max-wait-ms'='60000',
+  'commit.retry.total-timeout-ms'='1800000'
+);
+```
+
+This configuration:
+- Compresses metadata for efficiency
+- Retains 30 days of view version history
+- Prevents accidental dialect removal
+- Uses robust retry settings for high-concurrency environments

@@ -1,0 +1,406 @@
+---
+title: Nessie Catalog
+description: Git-like operations for Apache Iceberg with Project Nessie - branches, tags, and multi-table transactions
+---
+
+## Overview
+
+Project Nessie provides a Git-like experience for your data lake, bringing version control concepts to Apache Iceberg tables. With Nessie, you get:
+
+- **Git-like operations**: Create branches, tags, and commits
+- **Multi-table transactions**: Atomic changes across multiple tables
+- **Time travel**: Access historical states across the entire catalog
+- **Isolated experimentation**: Test changes in branches before merging
+
+<Note>
+Nessie requires a separate server. See [Project Nessie - Getting Started](https://projectnessie.org/try/) to set up a Nessie server.
+</Note>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Branches" icon="code-branch">
+    Create isolated environments for development, testing, and experimentation
+  </Card>
+  
+  <Card title="Tags" icon="tag">
+    Mark specific points in history for reproducibility and compliance
+  </Card>
+  
+  <Card title="Multi-table Transactions" icon="layer-group">
+    Atomically commit changes across multiple tables in a single operation
+  </Card>
+  
+  <Card title="Merge & Cherry-Pick" icon="code-merge">
+    Integrate changes between branches selectively
+  </Card>
+</CardGroup>
+
+## Configuration
+
+### Required Properties
+
+| Property | Description |
+|----------|-------------|
+| `warehouse` | File path for table storage |
+| `uri` | Nessie server base URI (e.g., `http://localhost:19120/api/v2`) |
+| `ref` | Branch or tag to use (optional, default: `main`) |
+
+### Spark Configuration
+
+Start Spark with Nessie catalog:
+
+```shell
+spark-sql \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{icebergVersion} \
+  --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.projectnessie.spark.extensions.NessieSparkSessionExtensions \
+  --conf spark.sql.catalog.nessie=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.nessie.type=nessie \
+  --conf spark.sql.catalog.nessie.uri=http://localhost:19120/api/v2 \
+  --conf spark.sql.catalog.nessie.ref=main \
+  --conf spark.sql.catalog.nessie.warehouse=s3://my-bucket/warehouse
+```
+
+### Flink Configuration
+
+```python
+import os
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.table import StreamTableEnvironment
+
+env = StreamExecutionEnvironment.get_execution_environment()
+iceberg_flink_runtime_jar = os.path.join(os.getcwd(), "iceberg-flink-runtime-{icebergVersion}.jar")
+env.add_jars("file://{}".format(iceberg_flink_runtime_jar))
+table_env = StreamTableEnvironment.create(env)
+
+table_env.execute_sql("""
+  CREATE CATALOG nessie_catalog WITH (
+    'type' = 'iceberg',
+    'catalog-type' = 'nessie',
+    'uri' = 'http://localhost:19120/api/v2',
+    'ref' = 'main',
+    'warehouse' = 's3://my-bucket/warehouse'
+  )
+""")
+```
+
+### Java API
+
+```java
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.CatalogUtil;
+import java.util.HashMap;
+import java.util.Map;
+
+Map<String, String> options = new HashMap<>();
+options.put("warehouse", "s3://my-bucket/warehouse");
+options.put("ref", "main");
+options.put("uri", "http://localhost:19120/api/v2");
+
+Catalog nessieCatalog = CatalogUtil.loadCatalog(
+  "org.apache.iceberg.nessie.NessieCatalog",
+  "nessie",
+  options,
+  hadoopConfig
+);
+```
+
+## Working with Branches
+
+### Create a Branch
+
+```sql
+-- Create a development branch from main
+CREATE BRANCH dev IN nessie FROM main;
+
+-- Switch to the dev branch
+USE REFERENCE dev IN nessie;
+```
+
+### List Branches
+
+```sql
+LIST REFERENCES IN nessie;
+```
+
+### Make Changes in a Branch
+
+```sql
+USE REFERENCE dev IN nessie;
+
+-- Create a table in dev branch
+CREATE TABLE nessie.db.experiments (
+  id bigint,
+  data string,
+  created_at timestamp
+) USING iceberg;
+
+-- Insert data
+INSERT INTO nessie.db.experiments 
+VALUES (1, 'test data', current_timestamp());
+
+-- Changes are isolated to dev branch
+```
+
+### Merge Branches
+
+```sql
+-- Merge dev branch into main
+MERGE BRANCH dev INTO main IN nessie;
+```
+
+### Delete a Branch
+
+```sql
+DROP BRANCH dev IN nessie;
+```
+
+## Working with Tags
+
+### Create a Tag
+
+```sql
+-- Tag the current state for compliance
+CREATE TAG quarterly_snapshot IN nessie FROM main;
+```
+
+### Access Tagged State
+
+```sql
+-- Query data as it was at the tag
+USE REFERENCE quarterly_snapshot IN nessie;
+
+SELECT * FROM nessie.db.sales;
+```
+
+## Multi-table Transactions
+
+Nessie enables loosely coupled multi-table transactions using branches:
+
+```sql
+-- Create a branch for the transaction
+CREATE BRANCH etl_job IN nessie FROM main;
+USE REFERENCE etl_job IN nessie;
+
+-- Perform multiple operations
+INSERT INTO nessie.warehouse.inventory 
+SELECT * FROM staging.new_inventory;
+
+UPDATE nessie.warehouse.products 
+SET stock = stock - sold_quantity;
+
+INSERT INTO nessie.analytics.sales_summary
+SELECT product_id, SUM(quantity), SUM(revenue)
+FROM nessie.warehouse.sales
+GROUP BY product_id;
+
+-- Atomically merge all changes
+MERGE BRANCH etl_job INTO main IN nessie;
+```
+
+<Note>
+While this provides atomic visibility of changes, each operation is still a separate Iceberg transaction. This is different from true ACID multi-table transactions.
+</Note>
+
+## Experimentation Workflow
+
+Test schema changes or partition evolution safely:
+
+```sql
+-- Create experiment branch
+CREATE BRANCH partition_experiment IN nessie FROM main;
+USE REFERENCE partition_experiment IN nessie;
+
+-- Test partition evolution
+ALTER TABLE nessie.db.events 
+SET PARTITION SPEC (days(created_at));
+
+-- Run performance tests
+SELECT COUNT(*) 
+FROM nessie.db.events 
+WHERE created_at >= current_date() - interval 7 days;
+
+-- If successful, merge; otherwise drop the branch
+MERGE BRANCH partition_experiment INTO main IN nessie;
+-- OR
+DROP BRANCH partition_experiment IN nessie;
+```
+
+## Time Travel Across Catalog
+
+View the entire catalog at a specific commit:
+
+```sql
+-- List all commits
+SHOW LOG IN nessie;
+
+-- Use a specific commit hash
+USE REFERENCE '0123456789abcdef' IN nessie;
+
+-- Query all tables at that point in time
+SELECT * FROM nessie.db.table1;
+SELECT * FROM nessie.db.table2;
+```
+
+## Nessie SQL Extensions
+
+Nessie provides additional SQL commands for repository management:
+
+```sql
+-- Show current reference
+SHOW CURRENT REFERENCE IN nessie;
+
+-- Show commit log
+SHOW LOG IN nessie;
+
+-- Show log for specific reference
+SHOW LOG dev IN nessie;
+
+-- List all references (branches and tags)
+LIST REFERENCES IN nessie;
+
+-- Create reference from specific hash
+CREATE TAG snapshot_v1 IN nessie FROM main AT '0123456789abcdef';
+
+-- Assign reference to specific hash
+ASSIGN BRANCH main TO '0123456789abcdef' IN nessie;
+```
+
+For complete SQL syntax, see [Nessie SQL Extensions](https://projectnessie.org/tools/sql/).
+
+## Advanced Features
+
+### Cherry-Pick Commits
+
+Selectively apply commits from one branch to another:
+
+```java
+import org.projectnessie.client.api.NessieApiV2;
+import org.projectnessie.model.Branch;
+import org.projectnessie.model.MergeResponse;
+
+NessieApiV2 api = ...; // Get Nessie client
+
+// Cherry-pick specific commits
+MergeResponse response = api.mergeRefIntoBranch()
+    .branch(Branch.of("main", mainHash))
+    .fromRef(Branch.of("feature", featureHash))
+    .commitId(specificCommitHash)
+    .merge();
+```
+
+### Namespace Enforcement
+
+Nessie requires explicit namespace creation:
+
+```sql
+-- Create namespace first
+CREATE NAMESPACE nessie.analytics;
+
+-- Then create tables in that namespace
+CREATE TABLE nessie.analytics.metrics (
+  metric_name string,
+  metric_value double,
+  timestamp timestamp
+) USING iceberg;
+```
+
+See [Namespace Enforcement](https://projectnessie.org/blog/namespace-enforcement/) for details.
+
+## Table Maintenance
+
+<Warning>
+Table maintenance operations (expire snapshots, remove orphan files) require special consideration with Nessie to avoid data loss across branches.
+</Warning>
+
+Before running maintenance:
+
+1. Identify all active branches that reference the table
+2. Ensure snapshots used by any branch are not expired
+3. Consider using [Nessie Management Services](https://projectnessie.org/features/management/)
+
+See [Nessie and Iceberg Maintenance](https://projectnessie.org/features/management/) for best practices.
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="CI/CD for Data Pipelines">
+    Create a branch for each pipeline run, validate results, and merge only if tests pass:
+    
+    ```sql
+    CREATE BRANCH pipeline_run_123 IN nessie FROM main;
+    -- Run pipeline transformations
+    -- Run data quality checks
+    -- If passed: MERGE BRANCH pipeline_run_123 INTO main IN nessie;
+    ```
+  </Accordion>
+  
+  <Accordion title="Multi-table ETL">
+    Update fact and dimension tables atomically:
+    
+    ```sql
+    CREATE BRANCH etl_2024_03_15 IN nessie FROM main;
+    -- Update dim_customer, dim_product, fact_sales
+    MERGE BRANCH etl_2024_03_15 INTO main IN nessie;
+    ```
+  </Accordion>
+  
+  <Accordion title="Environment Isolation">
+    Maintain separate dev, staging, and prod branches:
+    
+    ```sql
+    CREATE BRANCH dev IN nessie FROM main;
+    CREATE BRANCH staging IN nessie FROM main;
+    -- Promote: MERGE BRANCH dev INTO staging
+    -- Release: MERGE BRANCH staging INTO main
+    ```
+  </Accordion>
+  
+  <Accordion title="Compliance & Auditing">
+    Tag snapshots for regulatory requirements:
+    
+    ```sql
+    CREATE TAG quarter_end_2024_q1 IN nessie FROM main;
+    -- Access data later for audit
+    USE REFERENCE quarter_end_2024_q1 IN nessie;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Client Tools
+
+Nessie provides additional tools beyond SQL:
+
+- **[Nessie CLI](https://projectnessie.org/tools/cli/)**: Command-line interface for repository operations
+- **[Python Client](https://py.projectnessie.org/)**: Python library for programmatic access
+- **[REST API](https://projectnessie.org/develop/rest/)**: Direct HTTP API access
+
+## Comparison with Other Catalogs
+
+| Feature | Nessie | Glue | JDBC | Hive |
+|---------|--------|------|------|------|
+| Branches | ✅ | ❌ | ❌ | ❌ |
+| Tags | ✅ | ❌ | ❌ | ❌ |
+| Multi-table transactions | ✅ Loosely coupled | ❌ | ❌ | ❌ |
+| Catalog time travel | ✅ | ❌ | ❌ | ❌ |
+| Atomic commits | ✅ | ✅ | ✅ | ✅ |
+| Namespace support | ✅ | ✅ | ✅ | ✅ |
+
+## Resources
+
+- [Project Nessie Documentation](https://projectnessie.org/)
+- [Nessie Demo Repository](https://github.com/projectnessie/nessie-demos)
+- [Spark Integration Guide](https://projectnessie.org/tools/iceberg/spark/)
+- [Flink Integration Guide](https://projectnessie.org/tools/iceberg/flink/)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Custom Catalog" icon="code" href="/catalogs/custom-catalog">
+    Build your own catalog implementation
+  </Card>
+  
+  <Card title="Table Maintenance" icon="broom" href="/maintenance/overview">
+    Learn about snapshot expiration and cleanup
+  </Card>
+</CardGroup>

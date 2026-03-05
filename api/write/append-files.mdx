@@ -1,0 +1,380 @@
+---
+title: AppendFiles
+description: API for appending new files to Apache Iceberg tables
+---
+
+The `AppendFiles` interface provides an API for appending new data files to an Iceberg table.
+
+## Overview
+
+AppendFiles accumulates file additions, produces a new snapshot of the table, and commits that snapshot as the current. This is the primary interface for adding new data to a table.
+
+## Interface
+
+```java
+public interface AppendFiles extends SnapshotUpdate<AppendFiles>
+```
+
+## Core Methods
+
+### appendFile()
+
+Appends a data file to the table.
+
+```java
+AppendFiles appendFile(DataFile file)
+```
+
+**Parameters:**
+- `file` - A data file to append
+
+**Returns:** This for method chaining
+
+**Example:**
+```java
+DataFile dataFile = DataFiles.builder(spec)
+    .withPath("/path/to/data.parquet")
+    .withFileSizeInBytes(1024)
+    .withRecordCount(100)
+    .build();
+
+table.newAppend()
+    .appendFile(dataFile)
+    .commit();
+```
+
+### appendManifest()
+
+Appends a manifest file to the table.
+
+```java
+AppendFiles appendManifest(ManifestFile file)
+```
+
+**Parameters:**
+- `file` - A manifest file containing only appended files
+
+**Returns:** This for method chaining
+
+**Description:**
+The manifest must contain only appended files. All files in the manifest will be appended to the table in the snapshot created by this update.
+
+The manifest will be used directly if snapshot ID inheritance is enabled (format version > 1 or explicitly enabled). Otherwise, it will be rewritten to assign all entries this update's snapshot ID.
+
+**Lifecycle Management:**
+- If the manifest is rewritten, the caller must manage the lifecycle of the original manifest
+- If the manifest is used directly and the commit succeeds, it becomes part of table metadata
+- If the manifest gets merged with others, it will be deleted automatically on success
+- If the commit fails, the manifest is never deleted
+
+**Example:**
+```java
+ManifestFile manifest = ...; // Pre-created manifest
+
+table.newAppend()
+    .appendManifest(manifest)
+    .commit();
+```
+
+## Examples
+
+### Basic Append Operation
+
+```java
+import org.apache.iceberg.Table;
+import org.apache.iceberg.AppendFiles;
+import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DataFiles;
+import org.apache.iceberg.PartitionSpec;
+
+// Create data file
+PartitionSpec spec = table.spec();
+DataFile file = DataFiles.builder(spec)
+    .withPath("/data/2024/01/data-001.parquet")
+    .withFileSizeInBytes(10485760)
+    .withRecordCount(50000)
+    .withPartitionPath("date=2024-01-15")
+    .build();
+
+// Append to table
+AppendFiles append = table.newAppend();
+append.appendFile(file)
+      .commit();
+
+System.out.println("Appended file to snapshot: " + 
+    table.currentSnapshot().snapshotId());
+```
+
+### Appending Multiple Files
+
+```java
+import java.util.List;
+import java.util.ArrayList;
+
+// Collect multiple data files
+List<DataFile> dataFiles = new ArrayList<>();
+
+for (String path : filePaths) {
+    DataFile file = DataFiles.builder(spec)
+        .withPath(path)
+        .withFileSizeInBytes(getFileSize(path))
+        .withRecordCount(getRecordCount(path))
+        .build();
+    dataFiles.add(file);
+}
+
+// Append all files in single transaction
+AppendFiles append = table.newAppend();
+for (DataFile file : dataFiles) {
+    append.appendFile(file);
+}
+append.commit();
+
+System.out.println("Appended " + dataFiles.size() + " files");
+```
+
+### Append with Metrics
+
+```java
+import org.apache.iceberg.Metrics;
+import org.apache.iceberg.types.Types;
+import java.nio.ByteBuffer;
+import java.util.Map;
+import java.util.HashMap;
+
+// Create data file with metrics
+Map<Integer, Long> valueCounts = new HashMap<>();
+Map<Integer, Long> nullValueCounts = new HashMap<>();
+Map<Integer, ByteBuffer> lowerBounds = new HashMap<>();
+Map<Integer, ByteBuffer> upperBounds = new HashMap<>();
+
+valueCounts.put(1, 50000L);      // id column
+nullValueCounts.put(1, 0L);
+lowerBounds.put(1, longToBuffer(1L));
+upperBounds.put(1, longToBuffer(50000L));
+
+Metrics metrics = new Metrics(
+    50000L,                    // row count
+    null,                      // column sizes
+    valueCounts,               // value counts
+    nullValueCounts,           // null value counts
+    null,                      // nan value counts  
+    lowerBounds,               // lower bounds
+    upperBounds                // upper bounds
+);
+
+DataFile file = DataFiles.builder(spec)
+    .withPath("/data/file.parquet")
+    .withFileSizeInBytes(10485760)
+    .withMetrics(metrics)
+    .build();
+
+table.newAppend()
+    .appendFile(file)
+    .commit();
+```
+
+### Partitioned Append
+
+```java
+import org.apache.iceberg.PartitionData;
+
+// Create partition spec
+PartitionSpec spec = table.spec();
+
+// Create partition data
+PartitionData partition = new PartitionData(spec.partitionType());
+partition.put(0, "2024-01-15");  // date partition
+
+// Create data file with partition
+DataFile file = DataFiles.builder(spec)
+    .withPath("/data/date=2024-01-15/data-001.parquet")
+    .withFileSizeInBytes(10485760)
+    .withRecordCount(50000)
+    .withPartition(partition)
+    .build();
+
+table.newAppend()
+    .appendFile(file)
+    .commit();
+```
+
+### Append with Snapshot Properties
+
+```java
+import org.apache.iceberg.SnapshotSummary;
+
+// Append with custom snapshot properties
+AppendFiles append = table.newAppend();
+
+for (DataFile file : dataFiles) {
+    append.appendFile(file);
+}
+
+append.set("spark.app.id", "application_123")
+      .set("written-by", "ETL Pipeline v2.0")
+      .commit();
+
+// Check snapshot properties
+Snapshot snapshot = table.currentSnapshot();
+Map<String, String> summary = snapshot.summary();
+System.out.println("Written by: " + summary.get("written-by"));
+```
+
+### Appending Manifest Files
+
+```java
+import org.apache.iceberg.ManifestFile;
+import org.apache.iceberg.ManifestFiles;
+import org.apache.iceberg.io.OutputFile;
+
+// Create manifest with multiple data files
+OutputFile manifestOutput = table.io()
+    .newOutputFile("/metadata/manifest-001.avro");
+
+ManifestWriter<DataFile> writer = ManifestFiles.write(
+    table.spec(),
+    manifestOutput
+);
+
+try {
+    for (DataFile file : dataFiles) {
+        writer.add(file);
+    }
+} finally {
+    writer.close();
+}
+
+ManifestFile manifest = writer.toManifestFile();
+
+// Append the manifest
+table.newAppend()
+    .appendManifest(manifest)
+    .commit();
+```
+
+### Atomic Multi-File Append
+
+```java
+import org.apache.iceberg.exceptions.CommitFailedException;
+
+try {
+    AppendFiles append = table.newAppend();
+    
+    // Add all files
+    for (DataFile file : newDataFiles) {
+        append.appendFile(file);
+    }
+    
+    // Commit atomically
+    append.commit();
+    
+    System.out.println("Successfully appended " + newDataFiles.size() + " files");
+    
+} catch (CommitFailedException e) {
+    // Handle commit failure - no files were added
+    System.err.println("Append failed: " + e.getMessage());
+    // Retry or handle error
+}
+```
+
+### Append with Validation
+
+```java
+import org.apache.iceberg.FileFormat;
+
+// Validate and append files
+AppendFiles append = table.newAppend();
+
+for (DataFile file : dataFiles) {
+    // Validate file
+    if (file.recordCount() == 0) {
+        System.err.println("Skipping empty file: " + file.path());
+        continue;
+    }
+    
+    if (file.format() != FileFormat.PARQUET) {
+        System.err.println("Skipping non-Parquet file: " + file.path());
+        continue;
+    }
+    
+    append.appendFile(file);
+}
+
+append.commit();
+```
+
+### Incremental Append Pattern
+
+```java
+class IncrementalAppender {
+    private final Table table;
+    private final List<DataFile> buffer = new ArrayList<>();
+    private static final int BATCH_SIZE = 100;
+    
+    public IncrementalAppender(Table table) {
+        this.table = table;
+    }
+    
+    public void addFile(DataFile file) {
+        buffer.add(file);
+        
+        if (buffer.size() >= BATCH_SIZE) {
+            flush();
+        }
+    }
+    
+    public void flush() {
+        if (buffer.isEmpty()) {
+            return;
+        }
+        
+        AppendFiles append = table.newAppend();
+        for (DataFile file : buffer) {
+            append.appendFile(file);
+        }
+        
+        append.commit();
+        
+        System.out.println("Flushed " + buffer.size() + " files");
+        buffer.clear();
+    }
+    
+    public void close() {
+        flush();
+    }
+}
+
+// Usage
+IncrementalAppender appender = new IncrementalAppender(table);
+try {
+    for (DataFile file : streamOfFiles) {
+        appender.addFile(file);
+    }
+} finally {
+    appender.close();
+}
+```
+
+## Commit Behavior
+
+When committing, changes are applied to the latest table snapshot:
+
+- **Conflict Resolution**: Commit conflicts are resolved by applying changes to the new latest snapshot and reattempting the commit
+- **Atomicity**: All files are added atomically - either all succeed or none are added
+- **Snapshot Creation**: A new snapshot is created containing all existing data plus the appended files
+
+## Inherited Methods
+
+From `SnapshotUpdate`:
+
+- `commit()` - Commits the changes and creates a new snapshot
+- `set(String key, String value)` - Sets a summary property
+- `deleteWith(Consumer<String> deleteFunc)` - Sets a delete callback
+
+## See Also
+
+- [OverwriteFiles](/api/write/overwrite-files) - Overwrite files in a table
+- [DeleteFiles](/api/write/delete-files) - Delete files from a table  
+- [RowDelta](/api/write/row-delta) - Row-level changes
+- [DataFile](/api/data-file) - Data file representation

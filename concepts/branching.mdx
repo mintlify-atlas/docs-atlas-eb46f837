@@ -1,0 +1,581 @@
+---
+title: "Branching and Tagging"
+description: "Branching, tagging, and snapshot lifecycle management in Apache Iceberg"
+---
+
+Iceberg supports **branches** and **tags** as named references to snapshots, enabling sophisticated snapshot lifecycle management beyond basic time travel. These features are essential for data quality workflows, auditing, and experimental data engineering.
+
+## Understanding Snapshots
+
+Every commit to an Iceberg table creates a **snapshot** - a complete, immutable view of the table at a point in time:
+
+```java
+// Each write operation creates a new snapshot
+table.newAppend()
+  .appendFile(dataFile1)
+  .commit(); // Creates snapshot 1
+
+table.newAppend()
+  .appendFile(dataFile2)  
+  .commit(); // Creates snapshot 2
+
+// View snapshot history
+for (Snapshot snap : table.snapshots()) {
+  System.out.println(snap.snapshotId() + ": " + snap.operation());
+}
+```
+
+Snapshots enable:
+- **Reader isolation** - Queries see a consistent view
+- **Time travel** - Query historical data
+- **Rollback** - Revert to previous states
+- **Incremental processing** - Track changes between snapshots
+
+## Snapshot Retention
+
+By default, all snapshots are retained until explicitly expired. The `expire_snapshots` procedure removes old snapshots:
+
+```sql
+-- Expire snapshots older than 7 days
+CALL catalog_name.system.expire_snapshots(
+  table => 'db.table',
+  older_than => TIMESTAMP '2024-03-01 00:00:00'
+);
+```
+
+However, basic retention has limitations:
+- All snapshots are treated equally
+- Important snapshots can be accidentally expired
+- No way to retain specific historical points
+
+**Branches and tags solve these problems** by providing independent lifecycle management.
+
+## Tags: Named Historical Snapshots
+
+Tags are **named references to snapshots** with their own retention policies:
+
+```sql
+-- Create a tag for end-of-month snapshot
+ALTER TABLE prod.db.table 
+CREATE TAG `EOM-2024-02` AS OF VERSION 12345 RETAIN 180 DAYS;
+
+-- Create a tag for compliance audit (retain forever)
+ALTER TABLE prod.db.table
+CREATE TAG `AUDIT-Q1-2024` AS OF VERSION 23456;
+
+-- Query using a tag  
+SELECT * FROM prod.db.table VERSION AS OF 'EOM-2024-02';
+```
+
+### Tag Properties
+
+- **Immutable** - Tags always point to the same snapshot
+- **Named** - Easy to remember and reference (`Q4-2023` vs snapshot ID `8372649283746`)
+- **Independent retention** - Each tag has its own max age
+- **Lightweight** - Just metadata, no data duplication
+
+### Tag Retention
+
+Tags control when both the reference and the snapshot can be deleted:
+
+```sql
+-- Tag retained for 7 days, then expired
+CREATE TAG `weekly-backup` RETAIN 7 DAYS;
+
+-- Tag retained forever (default)
+CREATE TAG `production-release-v2.0`;
+
+-- Update tag retention  
+ALTER TABLE db.table
+REPLACE TAG `weekly-backup` RETAIN 14 DAYS;
+```
+
+When `expire_snapshots` runs:
+1. Expired tags are removed
+2. Snapshots referenced only by expired tags can be deleted
+3. Snapshots referenced by active tags are preserved
+
+### Tag Use Cases
+
+<AccordionGroup>
+  <Accordion title="Regulatory Compliance">
+    Retain monthly snapshots for auditing:
+    
+    ```sql
+    -- Retain end-of-month snapshots for 7 years
+    ALTER TABLE financial_data
+    CREATE TAG `EOM-2024-01` AS OF VERSION 1000 RETAIN 2555 DAYS;
+    
+    ALTER TABLE financial_data  
+    CREATE TAG `EOM-2024-02` AS OF VERSION 2000 RETAIN 2555 DAYS;
+    ```
+  </Accordion>
+
+  <Accordion title="Release Milestones">
+    Mark production releases:
+    
+    ```sql
+    -- Tag production deployments (retain forever)
+    ALTER TABLE product_catalog
+    CREATE TAG `prod-release-2024-03-01` AS OF VERSION 5432;
+    
+    -- Reproduce exactly what customers saw
+    SELECT * FROM product_catalog 
+    VERSION AS OF 'prod-release-2024-03-01';
+    ```
+  </Accordion>
+
+  <Accordion title="Backup Points">
+    Create recovery points before risky operations:
+    
+    ```sql
+    -- Before major data migration
+    ALTER TABLE user_data
+    CREATE TAG `pre-migration-backup` RETAIN 30 DAYS;
+    
+    -- Perform migration...
+    
+    -- Rollback if needed
+    CALL catalog_name.system.rollback_to_tag('db.user_data', 'pre-migration-backup');
+    ```
+  </Accordion>
+
+  <Accordion title="Hierarchical Retention">
+    Implement tiered retention (daily/weekly/monthly/yearly):
+    
+    ```sql
+    -- Daily snapshots retained for 1 week
+    CREATE TAG `daily-2024-03-01` RETAIN 7 DAYS;
+    
+    -- Weekly snapshots retained for 1 month  
+    CREATE TAG `weekly-2024-W09` RETAIN 30 DAYS;
+    
+    -- Monthly snapshots retained for 6 months
+    CREATE TAG `monthly-2024-03` RETAIN 180 DAYS;
+    
+    -- Yearly snapshots retained forever
+    CREATE TAG `yearly-2024`;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Branches: Independent Lineages
+
+Branches are **mutable named references** that can have new snapshots committed to them:
+
+```sql
+-- Create a branch from current snapshot
+ALTER TABLE db.table CREATE BRANCH test_branch;
+
+-- Create branch from specific snapshot  
+ALTER TABLE db.table 
+CREATE BRANCH experiment AS OF VERSION 12345;
+
+-- Write to a branch (Spark)
+SET spark.wap.branch = test_branch;
+INSERT INTO db.table VALUES (1, 'test');
+
+-- Query branch data
+SELECT * FROM db.table.branch_test_branch;
+```
+
+### Branch vs Tag
+
+| Feature | Tag | Branch |
+|---------|-----|--------|
+| Mutable | No - always points to same snapshot | Yes - moves as new commits are made |
+| Writable | No - read-only reference | Yes - can commit new snapshots |
+| Lineage | Single snapshot | Chain of snapshots (history) |
+| Retention | Max reference age | Max reference age + snapshot retention |
+| Use case | Mark historical points | Development, testing, staging |
+
+### Branch Retention
+
+Branches have two retention settings:
+
+```sql
+-- Create branch with retention policies
+ALTER TABLE db.table 
+CREATE BRANCH test_branch 
+RETAIN 7 DAYS                    -- Branch reference expires in 7 days
+WITH SNAPSHOT RETENTION 2 SNAPSHOTS; -- Keep last 2 snapshots on branch
+```
+
+- **Branch retention** - How long the branch reference exists
+- **Snapshot retention** - How many snapshots to keep on the branch
+
+When `expire_snapshots` runs:
+- Snapshots beyond the retention count are deleted
+- After branch expires, all its snapshots can be deleted
+
+### Branch Use Cases
+
+<AccordionGroup>
+  <Accordion title="Write-Audit-Publish (WAP)">
+    Validate data before making it visible:
+    
+    ```sql
+    -- Enable WAP
+    ALTER TABLE prod.db.table SET TBLPROPERTIES (
+      'write.wap.enabled'='true'
+    );
+    
+    -- Create audit branch
+    ALTER TABLE prod.db.table 
+    CREATE BRANCH audit_branch RETAIN 7 DAYS;
+    
+    -- Write to audit branch (Spark)
+    SET spark.wap.branch = audit_branch;
+    INSERT INTO prod.db.table SELECT * FROM staging.new_data;
+    
+    -- Validate data quality
+    SELECT 
+      count(*) as total,
+      count(DISTINCT user_id) as unique_users
+    FROM prod.db.table.branch_audit_branch;
+    
+    -- Publish if validation passes
+    CALL catalog_name.system.fast_forward(
+      'prod.db.table', 'main', 'audit_branch'
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="Experimental Features">
+    Test changes without affecting production:
+    
+    ```sql
+    -- Create experiment branch
+    ALTER TABLE analytics.events 
+    CREATE BRANCH new_metric_experiment RETAIN 14 DAYS;
+    
+    -- Write experimental data
+    SET spark.wap.branch = new_metric_experiment;
+    INSERT INTO analytics.events 
+    SELECT *, compute_new_metric(data) as new_metric
+    FROM source;
+    
+    -- Analyze results
+    SELECT avg(new_metric) 
+    FROM analytics.events.branch_new_metric_experiment;
+    
+    -- Merge if successful, or let branch expire
+    ```
+  </Accordion>
+
+  <Accordion title="Staging Environments">
+    Separate staging from production data:
+    
+    ```sql
+    -- Create staging branch
+    ALTER TABLE db.table CREATE BRANCH staging;
+    
+    -- Load staging data
+    SET spark.wap.branch = staging;
+    COPY INTO db.table FROM 's3://bucket/staging/';
+    
+    -- Test queries against staging
+    SELECT * FROM db.table.branch_staging WHERE ...;
+    
+    -- Promote to main after testing
+    CALL catalog_name.system.fast_forward('db.table', 'main', 'staging');
+    ```
+  </Accordion>
+
+  <Accordion title="Parallel Data Processing">
+    Isolate concurrent data pipelines:
+    
+    ```sql
+    -- Pipeline A writes to branch A
+    CREATE BRANCH pipeline_a RETAIN 1 DAYS;
+    
+    -- Pipeline B writes to branch B
+    CREATE BRANCH pipeline_b RETAIN 1 DAYS;
+    
+    -- Merge both when complete
+    -- (requires conflict resolution if overlapping data)
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Schema with Branches and Tags
+
+<Warning>
+**Important:** Schema is tracked at the table level, not per branch.
+</Warning>
+
+When working with branches:
+- **Writing to a branch** uses the **table's current schema**
+- **Querying a branch** uses the **table's current schema**  
+- **Time travel to a snapshot** uses the **snapshot's historical schema**
+
+Example:
+
+```sql
+-- Create table and branch
+CREATE TABLE db.table (id bigint, data string, col float);
+INSERT INTO db.table VALUES (1, 'a', 1.0);
+
+ALTER TABLE db.table CREATE BRANCH test_branch;
+
+-- Evolve schema (drops col, adds new_col)
+ALTER TABLE db.table DROP COLUMN col;
+ALTER TABLE db.table ADD COLUMN new_col date;
+
+-- Query branch - uses CURRENT schema (has new_col, not col)
+SELECT * FROM db.table.branch_test_branch;
+-- Returns: id=1, data='a', new_col=NULL
+
+-- Time travel to snapshot - uses SNAPSHOT's schema (has col)
+SELECT * FROM db.table VERSION AS OF <snapshot-id>;
+-- Returns: id=1, data='a', col=1.0
+```
+
+## Working with Branches and Tags
+
+### Creating
+
+<CodeGroup>
+```sql Spark SQL - Tags
+-- Create tag
+ALTER TABLE db.table CREATE TAG tag_name;
+
+-- From specific snapshot
+ALTER TABLE db.table CREATE TAG tag_name AS OF VERSION 12345;
+
+-- With retention  
+ALTER TABLE db.table CREATE TAG tag_name RETAIN 30 DAYS;
+```
+
+```sql Spark SQL - Branches  
+-- Create branch
+ALTER TABLE db.table CREATE BRANCH branch_name;
+
+-- From specific snapshot
+ALTER TABLE db.table CREATE BRANCH branch_name AS OF VERSION 12345;
+
+-- With retention
+ALTER TABLE db.table CREATE BRANCH branch_name 
+RETAIN 7 DAYS 
+WITH SNAPSHOT RETENTION 5 SNAPSHOTS;
+```
+
+```java Java API - Tags
+// Create tag
+table.manageSnapshots()
+  .createTag("tag_name", snapshotId)
+  .commit();
+
+// With retention (7 days in milliseconds)
+table.manageSnapshots()
+  .createTag("tag_name", snapshotId)
+  .maxRefAgeMs(7 * 24 * 60 * 60 * 1000L)
+  .commit();
+```
+
+```java Java API - Branches
+// Create branch  
+table.manageSnapshots()
+  .createBranch("branch_name", snapshotId)
+  .commit();
+
+// With retention
+table.manageSnapshots()
+  .createBranch("branch_name", snapshotId)
+  .maxRefAgeMs(7 * 24 * 60 * 60 * 1000L)
+  .minSnapshotsToKeep(5)
+  .commit();
+```
+</CodeGroup>
+
+### Reading
+
+<CodeGroup>
+```sql Spark SQL
+-- Query branch
+SELECT * FROM db.table.branch_branch_name;
+
+-- Or using VERSION AS OF
+SELECT * FROM db.table VERSION AS OF 'branch_name';
+
+-- Query tag
+SELECT * FROM db.table VERSION AS OF 'tag_name';
+
+-- List all references
+SELECT * FROM db.table.refs;
+```
+
+```java Java API
+// Read branch
+Table branchTable = catalog.loadTable(
+  TableIdentifier.of("db", "table"),
+  "branch_name"
+);
+
+// Read tag
+Table tagTable = catalog.loadTable(
+  TableIdentifier.of("db", "table"),  
+  "tag_name"
+);
+```
+</CodeGroup>
+
+### Writing
+
+<CodeGroup>
+```sql Spark SQL
+-- Set branch for writes
+SET spark.wap.branch = branch_name;
+INSERT INTO db.table VALUES (...);
+
+-- Or write directly to branch table
+INSERT INTO db.table.branch_branch_name VALUES (...);
+```
+
+```java Java API  
+// Append to branch
+Table branchTable = catalog.loadTable(
+  TableIdentifier.of("db", "table"),
+  "branch_name"
+);
+
+branchTable.newAppend()
+  .appendFile(dataFile)
+  .commit();
+```
+</CodeGroup>
+
+### Merging
+
+<CodeGroup>
+```sql Fast-Forward Merge
+-- Fast-forward main to branch tip
+-- (only if main hasn't diverged)
+CALL catalog_name.system.fast_forward(
+  table => 'db.table',
+  branch => 'main',
+  to => 'staging_branch'
+);
+```
+
+```sql Cherry-Pick Commits
+-- Apply specific snapshots to a branch
+CALL catalog_name.system.cherrypick_snapshot(
+  table => 'db.table',
+  snapshot_id => 12345
+);
+```
+</CodeGroup>
+
+### Deleting
+
+<CodeGroup>
+```sql Spark SQL
+-- Drop a tag
+ALTER TABLE db.table DROP TAG tag_name;
+
+-- Drop a branch (and its snapshots if no longer referenced)
+ALTER TABLE db.table DROP BRANCH branch_name;
+```
+
+```java Java API
+// Drop tag
+table.manageSnapshots()
+  .removeTag("tag_name")
+  .commit();
+
+// Drop branch  
+table.manageSnapshots()
+  .removeBranch("branch_name")
+  .commit();
+```
+</CodeGroup>
+
+## Retention Policy Example
+
+Comprehensive retention strategy:
+
+```sql
+-- Main branch: Retain 90 days, keep 100 snapshots minimum
+ALTER TABLE prod.events 
+CREATE OR REPLACE BRANCH main 
+WITH SNAPSHOT RETENTION 100 SNAPSHOTS 90 DAYS;
+
+-- Daily tags: Retain 7 days
+CREATE TAG `daily-2024-03-01` RETAIN 7 DAYS;
+CREATE TAG `daily-2024-03-02` RETAIN 7 DAYS;
+
+-- Weekly tags: Retain 30 days  
+CREATE TAG `weekly-2024-W09` RETAIN 30 DAYS;
+
+-- Monthly tags: Retain 180 days
+CREATE TAG `monthly-2024-03` RETAIN 180 DAYS;
+
+-- Yearly tags: Retain forever
+CREATE TAG `yearly-2024`;
+
+-- Audit branch: Retain 14 days, keep 5 snapshots
+CREATE BRANCH audit 
+RETAIN 14 DAYS 
+WITH SNAPSHOT RETENTION 5 SNAPSHOTS;
+
+-- Run expiration (respects all retention policies)
+CALL catalog_name.system.expire_snapshots(
+  table => 'prod.events',
+  older_than => TIMESTAMP '2024-01-01 00:00:00'
+);
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use Tags for Immutable Milestones">
+    Tags are perfect for points you want to preserve:
+    - End of reporting periods
+    - Production releases
+    - Compliance checkpoints
+    - Pre/post migration backups
+  </Accordion>
+
+  <Accordion title="Use Branches for Mutable Work">
+    Branches work well for ongoing development:
+    - Feature development and testing
+    - Data quality validation
+    - Staging environments  
+    - Experimental analyses
+  </Accordion>
+
+  <Accordion title="Set Appropriate Retention">
+    Balance storage cost with recovery needs:
+    - Short-lived branches (1-7 days) for testing
+    - Medium-term tags (30-90 days) for regular backups
+    - Long-term tags (years) for compliance
+  </Accordion>
+
+  <Accordion title="Name Consistently">
+    Use clear naming conventions:
+    - `daily-YYYY-MM-DD` for daily snapshots
+    - `weekly-YYYY-Www` for weekly snapshots
+    - `monthly-YYYY-MM` for monthly snapshots  
+    - `prod-release-vX.Y.Z` for releases
+    - `experiment-description` for tests
+  </Accordion>
+
+  <Accordion title="Monitor Branch/Tag Count">
+    Too many references can slow metadata operations:
+    - Regularly clean up expired branches
+    - Automate tag creation/cleanup
+    - Use `expire_snapshots` regularly
+  </Accordion>
+</AccordionGroup>
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Table Format" icon="table" href="/concepts/table-format">
+    Understand snapshots and metadata structure
+  </Card>
+  <Card title="Reliability" icon="shield-check" href="/concepts/reliability">
+    Learn about Iceberg's consistency guarantees
+  </Card>
+</CardGroup>

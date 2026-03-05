@@ -1,0 +1,562 @@
+---
+title: 'Snapshot'
+description: 'Apache Iceberg Snapshot API reference'
+---
+
+# Snapshot Interface
+
+The `Snapshot` interface represents a snapshot of the data in an Apache Iceberg table at a specific point in time.
+
+**Package:** `org.apache.iceberg`
+
+## Overview
+
+A snapshot consists of one or more file manifests, and the complete table contents is the union of all data files in those manifests.
+
+Snapshots are created by table operations like:
+- `AppendFiles` - Adding new data
+- `RewriteFiles` - Replacing existing files
+- `OverwriteFiles` - Overwriting by filter
+- `DeleteFiles` - Removing files
+- `RowDelta` - Row-level changes
+
+<Info>
+Snapshots enable time travel queries and provide ACID guarantees through immutable metadata.
+</Info>
+
+## Identity and Metadata
+
+### snapshotId()
+
+```java
+long snapshotId()
+```
+
+Returns this snapshot's unique ID.
+
+**Returns:** A long snapshot ID
+
+**Example:**
+```java
+Snapshot snapshot = table.currentSnapshot();
+System.out.println("Snapshot ID: " + snapshot.snapshotId());
+```
+
+---
+
+### sequenceNumber()
+
+```java
+long sequenceNumber()
+```
+
+Returns this snapshot's sequence number.
+
+Sequence numbers are assigned when a snapshot is committed and increase monotonically.
+
+**Returns:** A long sequence number
+
+---
+
+### parentId()
+
+```java
+Long parentId()
+```
+
+Returns this snapshot's parent snapshot ID, or null if this is the first snapshot.
+
+**Returns:** The parent snapshot ID, or null
+
+**Example:**
+```java
+Snapshot snapshot = table.currentSnapshot();
+Long parentId = snapshot.parentId();
+if (parentId != null) {
+    Snapshot parent = table.snapshot(parentId);
+    System.out.println("Parent snapshot: " + parent.snapshotId());
+}
+```
+
+---
+
+### timestampMillis()
+
+```java
+long timestampMillis()
+```
+
+Returns this snapshot's timestamp in milliseconds.
+
+This timestamp is the same as those produced by `System.currentTimeMillis()`.
+
+**Returns:** A long timestamp in milliseconds since epoch
+
+**Example:**
+```java
+Snapshot snapshot = table.currentSnapshot();
+long timestamp = snapshot.timestampMillis();
+Date date = new Date(timestamp);
+System.out.println("Snapshot created at: " + date);
+```
+
+---
+
+### schemaId()
+
+```java
+default Integer schemaId()
+```
+
+Returns the ID of the schema used when this snapshot was created.
+
+**Returns:** The schema ID, or null if not available
+
+---
+
+### manifestListLocation()
+
+```java
+String manifestListLocation()
+```
+
+Returns the location of this snapshot's manifest list.
+
+**Returns:** The manifest list file location, or null if not separate
+
+## Operation Information
+
+### operation()
+
+```java
+String operation()
+```
+
+Returns the name of the data operation that produced this snapshot.
+
+**Returns:** The operation name (e.g., "append", "overwrite", "delete"), or null if unknown
+
+**Common Operations:**
+- `append` - New data appended
+- `overwrite` - Data overwritten
+- `delete` - Data deleted
+- `replace` - Partitions replaced
+
+**Example:**
+```java
+Snapshot snapshot = table.currentSnapshot();
+System.out.println("Operation: " + snapshot.operation());
+```
+
+---
+
+### summary()
+
+```java
+Map<String, String> summary()
+```
+
+Returns a string map of summary data for the operation that produced this snapshot.
+
+Summary data typically includes:
+- `added-data-files` - Number of data files added
+- `deleted-data-files` - Number of data files deleted
+- `added-records` - Number of records added
+- `deleted-records` - Number of records deleted
+- `total-data-files` - Total data files after operation
+- `total-records` - Total records after operation
+
+**Returns:** A map of summary key-value pairs
+
+**Example:**
+```java
+Snapshot snapshot = table.currentSnapshot();
+Map<String, String> summary = snapshot.summary();
+System.out.println("Added files: " + summary.get("added-data-files"));
+System.out.println("Total records: " + summary.get("total-records"));
+```
+
+## Manifest Access
+
+### allManifests(FileIO io)
+
+```java
+List<ManifestFile> allManifests(FileIO io)
+```
+
+Returns all manifest files (both data and delete manifests) in this snapshot.
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** List of ManifestFile objects
+
+**Example:**
+```java
+List<ManifestFile> manifests = snapshot.allManifests(table.io());
+System.out.println("Total manifests: " + manifests.size());
+```
+
+---
+
+### dataManifests(FileIO io)
+
+```java
+List<ManifestFile> dataManifests(FileIO io)
+```
+
+Returns manifest files for data files only.
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** List of data ManifestFile objects
+
+**Example:**
+```java
+List<ManifestFile> dataManifests = snapshot.dataManifests(table.io());
+for (ManifestFile manifest : dataManifests) {
+    System.out.println("Data manifest: " + manifest.path());
+}
+```
+
+---
+
+### deleteManifests(FileIO io)
+
+```java
+List<ManifestFile> deleteManifests(FileIO io)
+```
+
+Returns manifest files for delete files only.
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** List of delete ManifestFile objects
+
+## Data File Access
+
+### addedDataFiles(FileIO io)
+
+```java
+Iterable<DataFile> addedDataFiles(FileIO io)
+```
+
+Returns all data files added to the table in this snapshot.
+
+The files include these columns:
+- `file_path`
+- `file_format`
+- `partition`
+- `record_count`
+- `file_size_in_bytes`
+- Data and file sequence numbers
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** Iterable of DataFile objects added in this snapshot
+
+**Example:**
+```java
+Iterable<DataFile> addedFiles = snapshot.addedDataFiles(table.io());
+for (DataFile file : addedFiles) {
+    System.out.println("Added: " + file.path() + " (" + file.recordCount() + " records)");
+}
+```
+
+---
+
+### removedDataFiles(FileIO io)
+
+```java
+Iterable<DataFile> removedDataFiles(FileIO io)
+```
+
+Returns all data files removed from the table in this snapshot.
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** Iterable of DataFile objects removed in this snapshot
+
+**Example:**
+```java
+Iterable<DataFile> removedFiles = snapshot.removedDataFiles(table.io());
+for (DataFile file : removedFiles) {
+    System.out.println("Removed: " + file.path());
+}
+```
+
+## Delete File Access
+
+### addedDeleteFiles(FileIO io)
+
+```java
+default Iterable<DeleteFile> addedDeleteFiles(FileIO io)
+```
+
+Returns all delete files added to the table in this snapshot.
+
+The files include these columns:
+- `file_path`
+- `file_format`
+- `partition`
+- `record_count`
+- `file_size_in_bytes`
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** Iterable of DeleteFile objects added in this snapshot
+
+**Throws:** `UnsupportedOperationException` if not implemented
+
+---
+
+### removedDeleteFiles(FileIO io)
+
+```java
+default Iterable<DeleteFile> removedDeleteFiles(FileIO io)
+```
+
+Returns all delete files removed from the table in this snapshot.
+
+<ParamField path="io" type="FileIO" required>
+  A FileIO instance used for reading files from storage
+</ParamField>
+
+**Returns:** Iterable of DeleteFile objects removed in this snapshot
+
+**Throws:** `UnsupportedOperationException` if not implemented
+
+## Row Lineage (Optional)
+
+### firstRowId()
+
+```java
+default Long firstRowId()
+```
+
+Returns the row-id of the first newly added row in this snapshot.
+
+All rows added in this snapshot will have a row-id greater than or equal to this value.
+
+**Returns:** The first row-id used in this snapshot, or null when row lineage is not supported
+
+---
+
+### addedRows()
+
+```java
+default Long addedRows()
+```
+
+Returns the upper bound of the number of rows with assigned row IDs in this snapshot.
+
+This can be used to safely increment the table's `next-row-id` during a commit. The value may be more than the number of rows added in this snapshot and can include some existing rows.
+
+**Returns:** The upper bound of rows with assigned row IDs, or null if not stored
+
+<Note>
+This field is optional but required when the table version supports row lineage.
+</Note>
+
+## Encryption
+
+### keyId()
+
+```java
+default String keyId()
+```
+
+Returns the ID of the encryption key used to encrypt this snapshot's manifest list.
+
+**Returns:** A string key ID, or null if not encrypted
+
+## Usage Examples
+
+### Getting Current Snapshot
+
+```java
+Table table = catalog.loadTable(TableIdentifier.of("db", "events"));
+Snapshot current = table.currentSnapshot();
+
+if (current != null) {
+    System.out.println("Current snapshot ID: " + current.snapshotId());
+    System.out.println("Timestamp: " + new Date(current.timestampMillis()));
+    System.out.println("Operation: " + current.operation());
+}
+```
+
+### Examining Snapshot Summary
+
+```java
+Snapshot snapshot = table.currentSnapshot();
+Map<String, String> summary = snapshot.summary();
+
+System.out.println("Summary:");
+for (Map.Entry<String, String> entry : summary.entrySet()) {
+    System.out.println("  " + entry.getKey() + ": " + entry.getValue());
+}
+
+// Common metrics
+String addedFiles = summary.get("added-data-files");
+String totalRecords = summary.get("total-records");
+System.out.println("Added files: " + addedFiles);
+System.out.println("Total records: " + totalRecords);
+```
+
+### Listing Manifests
+
+```java
+Snapshot snapshot = table.currentSnapshot();
+FileIO io = table.io();
+
+List<ManifestFile> dataManifests = snapshot.dataManifests(io);
+System.out.println("Data manifests: " + dataManifests.size());
+
+List<ManifestFile> deleteManifests = snapshot.deleteManifests(io);
+System.out.println("Delete manifests: " + deleteManifests.size());
+
+List<ManifestFile> allManifests = snapshot.allManifests(io);
+System.out.println("Total manifests: " + allManifests.size());
+```
+
+### Inspecting Added and Removed Files
+
+```java
+Snapshot snapshot = table.currentSnapshot();
+FileIO io = table.io();
+
+// Count added files
+long addedCount = 0;
+long addedBytes = 0;
+for (DataFile file : snapshot.addedDataFiles(io)) {
+    addedCount++;
+    addedBytes += file.fileSizeInBytes();
+}
+System.out.println("Added " + addedCount + " files (" + addedBytes + " bytes)");
+
+// Count removed files
+long removedCount = 0;
+for (DataFile file : snapshot.removedDataFiles(io)) {
+    removedCount++;
+}
+System.out.println("Removed " + removedCount + " files");
+```
+
+### Traversing Snapshot History
+
+```java
+Snapshot snapshot = table.currentSnapshot();
+
+while (snapshot != null) {
+    System.out.println("Snapshot " + snapshot.snapshotId() + ":");
+    System.out.println("  Timestamp: " + new Date(snapshot.timestampMillis()));
+    System.out.println("  Operation: " + snapshot.operation());
+    
+    Long parentId = snapshot.parentId();
+    if (parentId != null) {
+        snapshot = table.snapshot(parentId);
+    } else {
+        break;
+    }
+}
+```
+
+### Time Travel with Snapshots
+
+```java
+// Read from a specific snapshot
+long snapshotId = 12345L;
+Snapshot snapshot = table.snapshot(snapshotId);
+if (snapshot != null) {
+    TableScan scan = table.newScan().useSnapshot(snapshotId);
+    // Process scan results
+}
+
+// Find snapshot at specific time
+long targetTime = System.currentTimeMillis() - (24 * 60 * 60 * 1000); // 1 day ago
+Snapshot historicalSnapshot = null;
+for (Snapshot s : table.snapshots()) {
+    if (s.timestampMillis() <= targetTime) {
+        if (historicalSnapshot == null || 
+            s.timestampMillis() > historicalSnapshot.timestampMillis()) {
+            historicalSnapshot = s;
+        }
+    }
+}
+```
+
+### Examining Snapshot Lineage
+
+```java
+Snapshot snapshot = table.currentSnapshot();
+
+// Check if row lineage is supported
+Long firstRowId = snapshot.firstRowId();
+if (firstRowId != null) {
+    System.out.println("First row ID: " + firstRowId);
+    System.out.println("Added rows: " + snapshot.addedRows());
+}
+```
+
+### Getting Snapshot by Reference
+
+```java
+// Get snapshot by name/reference
+Snapshot mainSnapshot = table.snapshot("main");
+Snapshot auditSnapshot = table.snapshot("audit-branch");
+
+if (mainSnapshot != null) {
+    System.out.println("Main branch snapshot: " + mainSnapshot.snapshotId());
+}
+```
+
+### Analyzing Delete Files
+
+```java
+Snapshot snapshot = table.currentSnapshot();
+FileIO io = table.io();
+
+try {
+    Iterable<DeleteFile> addedDeletes = snapshot.addedDeleteFiles(io);
+    int deleteCount = 0;
+    for (DeleteFile deleteFile : addedDeletes) {
+        deleteCount++;
+        System.out.println("Delete file: " + deleteFile.path());
+    }
+    System.out.println("Total delete files added: " + deleteCount);
+} catch (UnsupportedOperationException e) {
+    System.out.println("Delete file tracking not supported");
+}
+```
+
+## Best Practices
+
+<Tip>
+**Snapshot Management:**
+- Regularly expire old snapshots to reduce metadata overhead
+- Use snapshot references for important table states
+- Leverage time travel for auditing and debugging
+- Monitor snapshot growth to manage storage costs
+</Tip>
+
+<Warning>
+**Performance Considerations:**
+- Accessing file lists from snapshots can be expensive for large tables
+- Use snapshot summary data when possible instead of iterating files
+- Consider snapshot expiration policies based on retention requirements
+</Warning>
+
+## Source Code Reference
+
+Source: `org/apache/iceberg/Snapshot.java:34`

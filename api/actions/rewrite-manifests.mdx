@@ -1,0 +1,265 @@
+---
+title: RewriteManifests Action
+description: API reference for the RewriteManifests action that optimizes manifest file organization
+---
+
+# RewriteManifests
+
+The `RewriteManifests` action rewrites manifest files to optimize metadata access and query planning performance. This is useful for improving scan planning efficiency and reducing metadata overhead.
+
+## Interface
+
+```java
+public interface RewriteManifests extends SnapshotUpdate<RewriteManifests, RewriteManifests.Result>
+```
+
+## Overview
+
+Manifest files contain metadata about data files in a table. Over time, as tables evolve through many write operations, manifest files can become:
+- Fragmented across many small files
+- Poorly organized for common query patterns
+- Associated with outdated partition specifications
+
+Rewriting manifests helps:
+- Reduce the number of manifest files
+- Organize manifests by partition values for better pruning
+- Update manifests to use current partition specifications
+- Improve query planning performance
+
+## Methods
+
+### specId
+
+Rewrite manifests for a specific partition specification ID.
+
+```java
+RewriteManifests specId(int specId)
+```
+
+**Parameters:**
+- `specId` - The partition specification ID
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+action.specId(0); // Rewrite manifests for spec ID 0
+```
+
+<Note>
+If not set, defaults to the table's default partition specification ID.
+</Note>
+
+### rewriteIf
+
+Rewrite only manifests that match a given predicate.
+
+```java
+RewriteManifests rewriteIf(Predicate<ManifestFile> predicate)
+```
+
+**Parameters:**
+- `predicate` - A predicate to test manifest files
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Only rewrite small manifests
+action.rewriteIf(manifest -> 
+  manifest.length() < 10 * 1024 * 1024 // Less than 10MB
+);
+```
+
+### sortBy
+
+Sort rewritten manifests by specific partition field names.
+
+```java
+RewriteManifests sortBy(List<String> partitionFields)
+```
+
+**Parameters:**
+- `partitionFields` - Exact transformed partition field names to sort by
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+// Sort by partition fields for better pruning
+action.sortBy(List.of("date_bucket", "region"));
+```
+
+<Note>
+Use transformed column names (e.g., "data_bucket") not raw column names (e.g., "data") for bucketed partitions.
+</Note>
+
+<Tip>
+Choosing frequently queried partition fields can significantly reduce planning time by allowing the query engine to skip irrelevant manifests.
+</Tip>
+
+### stagingLocation
+
+Specify a custom location for staging rewritten manifests.
+
+```java
+RewriteManifests stagingLocation(String stagingLocation)
+```
+
+**Parameters:**
+- `stagingLocation` - Path where staged manifests should be written
+
+**Returns:** `this` for method chaining
+
+**Example:**
+```java
+action.stagingLocation("s3://my-bucket/tmp/manifest-staging/");
+```
+
+<Note>
+If not set, defaults to the table's metadata location.
+</Note>
+
+## Result
+
+The `Result` interface provides information about the rewrite operation.
+
+### Methods
+
+```java
+interface Result {
+  Iterable<ManifestFile> rewrittenManifests();
+  Iterable<ManifestFile> addedManifests();
+}
+```
+
+**rewrittenManifests()**
+
+Returns the original manifest files that were rewritten.
+
+**addedManifests()**
+
+Returns the new manifest files created by the rewrite operation.
+
+## Usage Examples
+
+### Basic Manifest Rewrite
+
+```java
+// Rewrite all manifests
+RewriteManifests.Result result = actions
+  .rewriteManifests(table)
+  .execute();
+
+int rewrittenCount = Iterables.size(result.rewrittenManifests());
+int newCount = Iterables.size(result.addedManifests());
+
+System.out.println("Rewrote " + rewrittenCount + " manifests into " + newCount);
+```
+
+### Consolidate Small Manifests
+
+```java
+// Only rewrite manifests smaller than 8MB
+RewriteManifests.Result result = actions
+  .rewriteManifests(table)
+  .rewriteIf(manifest -> manifest.length() < 8 * 1024 * 1024)
+  .execute();
+```
+
+### Optimize for Query Patterns
+
+```java
+// Sort manifests by frequently queried partition fields
+RewriteManifests.Result result = actions
+  .rewriteManifests(table)
+  .sortBy(List.of("event_date", "region", "event_type"))
+  .execute();
+
+System.out.println("Manifests optimized for date/region/type queries");
+```
+
+### Rewrite Specific Partition Spec
+
+```java
+// Rewrite manifests for a specific partition spec
+RewriteManifests.Result result = actions
+  .rewriteManifests(table)
+  .specId(1)
+  .execute();
+```
+
+### With Custom Staging Location
+
+```java
+// Use custom staging location for manifest writes
+RewriteManifests.Result result = actions
+  .rewriteManifests(table)
+  .stagingLocation("s3://my-bucket/iceberg-tmp/manifests/")
+  .sortBy(List.of("date"))
+  .execute();
+```
+
+### Conditional Rewrite
+
+```java
+// Rewrite old or small manifests
+long thirtyDaysAgo = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(30);
+
+RewriteManifests.Result result = actions
+  .rewriteManifests(table)
+  .rewriteIf(manifest -> 
+    manifest.length() < 5 * 1024 * 1024 || // Smaller than 5MB
+    manifest.snapshotId() < thirtyDaysAgo   // Or older than 30 days
+  )
+  .execute();
+```
+
+## When to Rewrite Manifests
+
+Consider rewriting manifests when:
+
+1. **After many small writes**: Frequent small appends create many small manifest files
+2. **Query planning is slow**: Too many manifests increase planning overhead
+3. **Changing partition specs**: After evolving partition specifications
+4. **Optimizing for new query patterns**: When query patterns change significantly
+5. **After major compaction**: Following large data file rewrites
+
+## Best Practices
+
+1. **Sort by query patterns**: Use `sortBy()` to organize manifests for your most common queries
+
+2. **Use predicates wisely**: The `rewriteIf()` method can target specific problematic manifests
+
+3. **Monitor manifest count**: Track manifest file counts; excessive fragmentation hurts performance
+
+4. **Combine with data optimization**: Often beneficial after rewriting data files
+
+5. **Schedule periodic rewrites**: Run on a regular schedule for tables with frequent writes
+
+<Tip>
+Rewriting manifests is a metadata-only operation and doesn't rewrite data files. It's relatively fast and low-cost.
+</Tip>
+
+<Warning>
+Rewriting manifests creates a new snapshot. The operation is safe and doesn't affect data availability.
+</Warning>
+
+## Performance Impact
+
+### Benefits
+- Faster query planning
+- Reduced metadata overhead
+- Better partition pruning
+- Fewer files to read during planning
+
+### Costs
+- Creates a new snapshot
+- Requires reading and writing manifest files
+- May require temporary storage for staging
+
+## Related
+
+- [RewriteDataFiles](/api/actions/rewrite-data-files) - Optimize data file layout
+- [ExpireSnapshots](/api/actions/expire-snapshots) - Clean up old snapshots
+- [Manifest Files](/concepts/manifests) - Understanding manifest structure

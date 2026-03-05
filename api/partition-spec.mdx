@@ -1,0 +1,711 @@
+---
+title: 'PartitionSpec'
+description: 'Apache Iceberg PartitionSpec API reference'
+---
+
+# PartitionSpec Class
+
+The `PartitionSpec` class defines how to produce partition data for an Apache Iceberg table. Partition data is produced by transforming columns in a table.
+
+**Package:** `org.apache.iceberg`
+
+## Overview
+
+The `PartitionSpec` class provides:
+- Column transformation for partitioning (identity, bucket, truncate, temporal)
+- Partition evolution with spec IDs
+- Multiple partition fields per spec
+- Compatibility checking with schemas
+
+<Info>
+Partition field IDs start at 1000 to avoid conflicts with schema field IDs.
+</Info>
+
+## Basic Methods
+
+### schema()
+
+```java
+public Schema schema()
+```
+
+Returns the schema for this partition spec.
+
+**Returns:** The Schema this spec is bound to
+
+---
+
+### specId()
+
+```java
+public int specId()
+```
+
+Returns the ID of this partition spec.
+
+**Returns:** The spec ID (0 for unpartitioned tables)
+
+---
+
+### fields()
+
+```java
+public List<PartitionField> fields()
+```
+
+Returns the list of partition fields for this spec.
+
+**Returns:** List of PartitionField objects
+
+**Example:**
+```java
+PartitionSpec spec = table.spec();
+for (PartitionField field : spec.fields()) {
+    System.out.println(field.name() + ": " + field.transform());
+}
+```
+
+---
+
+### isPartitioned()
+
+```java
+public boolean isPartitioned()
+```
+
+Returns true if the spec has partition fields (excluding void transforms).
+
+**Returns:** True if partitioned, false otherwise
+
+---
+
+### isUnpartitioned()
+
+```java
+public boolean isUnpartitioned()
+```
+
+Returns true if the spec has no partition fields.
+
+**Returns:** True if unpartitioned, false otherwise
+
+## Partition Field Access
+
+### getFieldsBySourceId(int fieldId)
+
+```java
+public List<PartitionField> getFieldsBySourceId(int fieldId)
+```
+
+Returns the partition fields that partition the given source field.
+
+<ParamField path="fieldId" type="int" required>
+  A field ID from the source schema
+</ParamField>
+
+**Returns:** List of PartitionField objects that partition this source field
+
+**Example:**
+```java
+// Get all partition fields derived from the "timestamp" column
+NestedField timestampField = schema.findField("timestamp");
+List<PartitionField> timePartitions = spec.getFieldsBySourceId(timestampField.fieldId());
+```
+
+---
+
+### identitySourceIds()
+
+```java
+public Set<Integer> identitySourceIds()
+```
+
+Returns the source field IDs for identity partitions.
+
+**Returns:** Set of source field IDs that use identity partitioning
+
+## Partition Types
+
+### partitionType()
+
+```java
+public StructType partitionType()
+```
+
+Returns a struct type for partition data defined by this spec.
+
+**Returns:** StructType describing the partition fields
+
+**Example:**
+```java
+StructType partType = spec.partitionType();
+for (Types.NestedField field : partType.fields()) {
+    System.out.println(field.name() + ": " + field.type());
+}
+```
+
+---
+
+### rawPartitionType()
+
+```java
+public StructType rawPartitionType()
+```
+
+Returns a struct matching partition information as written into manifest files.
+
+This differs from `partitionType()` when field IDs have been reassigned.
+
+**Returns:** StructType with original field IDs
+
+---
+
+### javaClasses()
+
+```java
+public Class<?>[] javaClasses()
+```
+
+Returns the Java classes for partition field values.
+
+**Returns:** Array of Class objects corresponding to partition fields
+
+## Partition Path Operations
+
+### partitionToPath(StructLike data)
+
+```java
+public String partitionToPath(StructLike data)
+```
+
+Converts partition data to a partition path string.
+
+<ParamField path="data" type="StructLike" required>
+  The partition data
+</ParamField>
+
+**Returns:** A partition path string (e.g., "year=2024/month=03/day=05")
+
+**Example:**
+```java
+StructLike partitionData = ...;
+String path = spec.partitionToPath(partitionData);
+// Returns: "year=2024/month=03/day=05"
+```
+
+## Compatibility
+
+### compatibleWith(PartitionSpec other)
+
+```java
+public boolean compatibleWith(PartitionSpec other)
+```
+
+Returns true if this spec is equivalent to another, with partition field IDs ignored.
+
+Two specs are compatible if they have the same:
+- Number of fields
+- Field order
+- Field names
+- Source columns
+- Transforms
+
+<ParamField path="other" type="PartitionSpec" required>
+  Another PartitionSpec to compare
+</ParamField>
+
+**Returns:** True if compatible, false otherwise
+
+## Conversion
+
+### toUnbound()
+
+```java
+public UnboundPartitionSpec toUnbound()
+```
+
+Converts this partition spec to an unbound spec.
+
+**Returns:** An UnboundPartitionSpec representation
+
+## Static Factory Methods
+
+### unpartitioned()
+
+```java
+public static PartitionSpec unpartitioned()
+```
+
+Returns a spec for unpartitioned tables.
+
+**Returns:** An empty partition spec
+
+**Example:**
+```java
+PartitionSpec spec = PartitionSpec.unpartitioned();
+assert spec.isUnpartitioned();
+```
+
+---
+
+### builderFor(Schema schema)
+
+```java
+public static Builder builderFor(Schema schema)
+```
+
+Creates a new partition spec builder for the given schema.
+
+<ParamField path="schema" type="Schema" required>
+  The table schema
+</ParamField>
+
+**Returns:** A Builder instance
+
+**Example:**
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .year("timestamp")
+    .bucket("user_id", 16)
+    .build();
+```
+
+## Builder Class
+
+The `Builder` class creates valid partition specs.
+
+### Builder Methods
+
+#### identity(String sourceName)
+
+```java
+public Builder identity(String sourceName)
+```
+
+Adds an identity partition using the source column name.
+
+<ParamField path="sourceName" type="String" required>
+  The source column name
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .identity("region");
+```
+
+---
+
+#### identity(String sourceName, String targetName)
+
+```java
+public Builder identity(String sourceName, String targetName)
+```
+
+Adds an identity partition with a custom partition field name.
+
+<ParamField path="sourceName" type="String" required>
+  The source column name
+</ParamField>
+
+<ParamField path="targetName" type="String" required>
+  The partition field name
+</ParamField>
+
+---
+
+#### year(String sourceName)
+
+```java
+public Builder year(String sourceName)
+```
+
+Adds a year transform partition.
+
+<ParamField path="sourceName" type="String" required>
+  The source date/timestamp column name
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .year("timestamp");  // Creates partition field "timestamp_year"
+```
+
+---
+
+#### year(String sourceName, String targetName)
+
+```java
+public Builder year(String sourceName, String targetName)
+```
+
+Adds a year transform partition with a custom name.
+
+---
+
+#### month(String sourceName)
+
+```java
+public Builder month(String sourceName)
+```
+
+Adds a month transform partition.
+
+<ParamField path="sourceName" type="String" required>
+  The source date/timestamp column name
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .month("timestamp");  // Creates partition field "timestamp_month"
+```
+
+---
+
+#### month(String sourceName, String targetName)
+
+```java
+public Builder month(String sourceName, String targetName)
+```
+
+Adds a month transform partition with a custom name.
+
+---
+
+#### day(String sourceName)
+
+```java
+public Builder day(String sourceName)
+```
+
+Adds a day transform partition.
+
+<ParamField path="sourceName" type="String" required>
+  The source date/timestamp column name
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .day("timestamp");  // Creates partition field "timestamp_day"
+```
+
+---
+
+#### day(String sourceName, String targetName)
+
+```java
+public Builder day(String sourceName, String targetName)
+```
+
+Adds a day transform partition with a custom name.
+
+---
+
+#### hour(String sourceName)
+
+```java
+public Builder hour(String sourceName)
+```
+
+Adds an hour transform partition.
+
+<ParamField path="sourceName" type="String" required>
+  The source timestamp column name
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .hour("timestamp");  // Creates partition field "timestamp_hour"
+```
+
+---
+
+#### hour(String sourceName, String targetName)
+
+```java
+public Builder hour(String sourceName, String targetName)
+```
+
+Adds an hour transform partition with a custom name.
+
+---
+
+#### bucket(String sourceName, int numBuckets)
+
+```java
+public Builder bucket(String sourceName, int numBuckets)
+```
+
+Adds a bucket transform partition.
+
+<ParamField path="sourceName" type="String" required>
+  The source column name
+</ParamField>
+
+<ParamField path="numBuckets" type="int" required>
+  The number of buckets
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .bucket("user_id", 16);  // Creates partition field "user_id_bucket"
+```
+
+---
+
+#### bucket(String sourceName, int numBuckets, String targetName)
+
+```java
+public Builder bucket(String sourceName, int numBuckets, String targetName)
+```
+
+Adds a bucket transform partition with a custom name.
+
+---
+
+#### truncate(String sourceName, int width)
+
+```java
+public Builder truncate(String sourceName, int width)
+```
+
+Adds a truncate transform partition.
+
+<ParamField path="sourceName" type="String" required>
+  The source column name
+</ParamField>
+
+<ParamField path="width" type="int" required>
+  The truncation width
+</ParamField>
+
+**Example:**
+```java
+Builder builder = PartitionSpec.builderFor(schema)
+    .truncate("id", 10);  // Creates partition field "id_trunc"
+```
+
+---
+
+#### truncate(String sourceName, int width, String targetName)
+
+```java
+public Builder truncate(String sourceName, int width, String targetName)
+```
+
+Adds a truncate transform partition with a custom name.
+
+---
+
+#### alwaysNull(String sourceName)
+
+```java
+public Builder alwaysNull(String sourceName)
+```
+
+Adds a void transform partition (always returns null).
+
+<ParamField path="sourceName" type="String" required>
+  The source column name
+</ParamField>
+
+<Note>
+Void transforms are used for deprecated partition fields in version 1 tables.
+</Note>
+
+---
+
+#### alwaysNull(String sourceName, String targetName)
+
+```java
+public Builder alwaysNull(String sourceName, String targetName)
+```
+
+Adds a void transform partition with a custom name.
+
+---
+
+#### withSpecId(int newSpecId)
+
+```java
+public Builder withSpecId(int newSpecId)
+```
+
+Sets the spec ID for this partition spec.
+
+<ParamField path="newSpecId" type="int" required>
+  The spec ID
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+---
+
+#### caseSensitive(boolean sensitive)
+
+```java
+public Builder caseSensitive(boolean sensitive)
+```
+
+Sets whether column name matching should be case-sensitive.
+
+<ParamField path="sensitive" type="boolean" required>
+  True for case-sensitive matching
+</ParamField>
+
+**Returns:** This builder for method chaining
+
+---
+
+#### build()
+
+```java
+public PartitionSpec build()
+```
+
+Builds the partition spec and validates compatibility with the schema.
+
+**Returns:** A new PartitionSpec
+
+**Throws:** `ValidationException` if the spec is invalid
+
+---
+
+#### build(boolean allowMissingFields)
+
+```java
+public PartitionSpec build(boolean allowMissingFields)
+```
+
+Builds the partition spec with optional validation relaxation.
+
+<ParamField path="allowMissingFields" type="boolean" required>
+  If true, allows partition fields whose source columns are missing
+</ParamField>
+
+**Returns:** A new PartitionSpec
+
+## Usage Examples
+
+### Creating an Unpartitioned Spec
+
+```java
+PartitionSpec spec = PartitionSpec.unpartitioned();
+assert spec.isUnpartitioned();
+```
+
+### Creating a Simple Partitioned Spec
+
+```java
+Schema schema = new Schema(
+    required(1, "id", Types.LongType.get()),
+    required(2, "timestamp", Types.TimestampType.withZone()),
+    optional(3, "category", Types.StringType.get())
+);
+
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .day("timestamp")
+    .identity("category")
+    .build();
+```
+
+### Creating a Multi-Level Time Partition
+
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .year("timestamp")
+    .month("timestamp")
+    .day("timestamp")
+    .build();
+
+// Partition path: year=2024/month=03/day=05
+```
+
+### Creating a Hash Bucket Partition
+
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .bucket("user_id", 16)  // 16 buckets
+    .day("timestamp")
+    .build();
+
+// Partition path: user_id_bucket=7/timestamp_day=2024-03-05
+```
+
+### Creating a Truncate Partition
+
+```java
+PartitionSpec spec = PartitionSpec.builderFor(schema)
+    .truncate("user_id", 100)  // Truncate to nearest 100
+    .build();
+```
+
+### Working with Partition Data
+
+```java
+PartitionSpec spec = table.spec();
+
+// Get partition type
+StructType partType = spec.partitionType();
+System.out.println("Partition fields: " + partType.fields());
+
+// Convert partition data to path
+StructLike partitionData = ...;
+String path = spec.partitionToPath(partitionData);
+System.out.println("Partition path: " + path);
+```
+
+### Checking Spec Compatibility
+
+```java
+PartitionSpec spec1 = table.spec();
+PartitionSpec spec2 = otherTable.spec();
+
+if (spec1.compatibleWith(spec2)) {
+    System.out.println("Specs are compatible");
+}
+```
+
+### Inspecting Partition Fields
+
+```java
+PartitionSpec spec = table.spec();
+
+for (PartitionField field : spec.fields()) {
+    System.out.println("Partition field: " + field.name());
+    System.out.println("  Source ID: " + field.sourceId());
+    System.out.println("  Field ID: " + field.fieldId());
+    System.out.println("  Transform: " + field.transform());
+}
+```
+
+### Partition Evolution Example
+
+```java
+// Original spec
+PartitionSpec spec1 = PartitionSpec.builderFor(schema)
+    .withSpecId(0)
+    .day("timestamp")
+    .build();
+
+// Evolved spec with additional partition
+PartitionSpec spec2 = PartitionSpec.builderFor(schema)
+    .withSpecId(1)
+    .day("timestamp")
+    .bucket("user_id", 16)
+    .build();
+
+// Update table partition spec
+table.updateSpec()
+    .addField("user_id_bucket", Expressions.bucket("user_id", 16))
+    .commit();
+```
+
+## Source Code Reference
+
+Source: `org/apache/iceberg/PartitionSpec.java:53`

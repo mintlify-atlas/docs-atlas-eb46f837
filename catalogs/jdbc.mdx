@@ -1,0 +1,333 @@
+---
+title: JDBC Catalog
+description: Use relational databases to manage Apache Iceberg table metadata with the JDBC catalog
+---
+
+## Overview
+
+The JDBC catalog allows you to manage Iceberg tables using any relational database that supports atomic transactions and read serializable isolation. This provides a lightweight, portable catalog solution without requiring Hive or cloud-specific services.
+
+## Supported Databases
+
+The JDBC catalog works with any database that supports:
+
+- **Atomic transactions** for safe concurrent commits
+- **Serializable isolation** for consistent reads
+
+Common databases:
+
+- PostgreSQL
+- MySQL
+- Oracle
+- SQL Server
+- SQLite (for development only)
+
+<Warning>
+SQLite does not support concurrent writes well. Use it only for local development and testing.
+</Warning>
+
+## Configuration Properties
+
+| Property | Required | Description |
+|----------|----------|-------------|
+| `uri` | Yes | JDBC connection string (e.g., `jdbc:mysql://host:3306/db`) |
+| `jdbc.user` | No | Database username |
+| `jdbc.password` | No | Database password |
+| `jdbc.<property>` | No | Any JDBC driver property |
+| `warehouse` | Yes | Root path for table data and metadata |
+| `io-impl` | No | Custom FileIO implementation (default: HadoopFileIO) |
+
+## Usage Examples
+
+### Spark Configuration
+
+Start Spark with JDBC catalog using MySQL:
+
+```shell
+spark-sql \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{icebergVersion} \
+  --conf spark.sql.catalog.my_catalog=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.my_catalog.type=jdbc \
+  --conf spark.sql.catalog.my_catalog.uri=jdbc:mysql://test.rds.us-west-2.amazonaws.com:3306/iceberg \
+  --conf spark.sql.catalog.my_catalog.warehouse=s3://my-bucket/warehouse \
+  --conf spark.sql.catalog.my_catalog.jdbc.user=admin \
+  --conf spark.sql.catalog.my_catalog.jdbc.password=secret \
+  --conf spark.sql.catalog.my_catalog.jdbc.verifyServerCertificate=true \
+  --conf spark.sql.catalog.my_catalog.jdbc.useSSL=true
+```
+
+### PostgreSQL Example
+
+```shell
+spark-sql \
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:{icebergVersion} \
+  --conf spark.sql.catalog.postgres_catalog=org.apache.iceberg.spark.SparkCatalog \
+  --conf spark.sql.catalog.postgres_catalog.type=jdbc \
+  --conf spark.sql.catalog.postgres_catalog.uri=jdbc:postgresql://localhost:5432/iceberg \
+  --conf spark.sql.catalog.postgres_catalog.warehouse=s3://warehouse/path \
+  --conf spark.sql.catalog.postgres_catalog.jdbc.user=iceberg_user \
+  --conf spark.sql.catalog.postgres_catalog.jdbc.password=iceberg_pass
+```
+
+### Java API
+
+Programmatically create a JDBC catalog:
+
+```java
+import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.CatalogProperties;
+import org.apache.iceberg.CatalogUtil;
+import org.apache.iceberg.jdbc.JdbcCatalog;
+import org.apache.hadoop.conf.Configuration;
+import java.util.HashMap;
+import java.util.Map;
+
+// Ensure JDBC driver is loaded
+Class.forName("com.mysql.cj.jdbc.Driver");
+
+// Configure catalog properties
+Map<String, String> properties = new HashMap<>();
+properties.put(CatalogProperties.CATALOG_IMPL, JdbcCatalog.class.getName());
+properties.put(CatalogProperties.URI, "jdbc:mysql://localhost:3306/iceberg");
+properties.put(JdbcCatalog.PROPERTY_PREFIX + "user", "admin");
+properties.put(JdbcCatalog.PROPERTY_PREFIX + "password", "secret");
+properties.put(CatalogProperties.WAREHOUSE_LOCATION, "s3://warehouse/path");
+
+// Create catalog
+Configuration hadoopConf = new Configuration();
+Catalog catalog = CatalogUtil.buildIcebergCatalog(
+  "jdbc_catalog",
+  properties,
+  hadoopConf
+);
+
+// Use the catalog
+Table table = catalog.loadTable(TableIdentifier.of("db", "table"));
+```
+
+### Flink Configuration
+
+```sql
+CREATE CATALOG jdbc_catalog WITH (
+  'type' = 'iceberg',
+  'catalog-type' = 'jdbc',
+  'uri' = 'jdbc:postgresql://localhost:5432/iceberg',
+  'jdbc.user' = 'iceberg_user',
+  'jdbc.password' = 'iceberg_pass',
+  'warehouse' = 'hdfs://namenode:8020/warehouse'
+);
+
+USE CATALOG jdbc_catalog;
+SHOW DATABASES;
+```
+
+### PySpark Example
+
+```python
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder \
+    .appName("Iceberg JDBC Catalog") \
+    .config("spark.sql.catalog.jdbc_catalog", "org.apache.iceberg.spark.SparkCatalog") \
+    .config("spark.sql.catalog.jdbc_catalog.type", "jdbc") \
+    .config("spark.sql.catalog.jdbc_catalog.uri", "jdbc:postgresql://localhost:5432/iceberg") \
+    .config("spark.sql.catalog.jdbc_catalog.warehouse", "s3://warehouse/path") \
+    .config("spark.sql.catalog.jdbc_catalog.jdbc.user", "iceberg_user") \
+    .config("spark.sql.catalog.jdbc_catalog.jdbc.password", "iceberg_pass") \
+    .getOrCreate()
+
+# Create a table
+spark.sql("""
+  CREATE TABLE jdbc_catalog.db.sample (
+    id bigint,
+    data string,
+    category string
+  )
+  USING iceberg
+  PARTITIONED BY (category)
+""")
+
+# Query the table
+df = spark.sql("SELECT * FROM jdbc_catalog.db.sample")
+df.show()
+```
+
+## Database Schema
+
+The JDBC catalog creates these tables in your database:
+
+### iceberg_tables
+
+Stores table metadata:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| catalog_name | VARCHAR | Catalog identifier |
+| table_namespace | VARCHAR | Namespace (database) name |
+| table_name | VARCHAR | Table name |
+| metadata_location | VARCHAR | Current metadata file path |
+| previous_metadata_location | VARCHAR | Previous metadata file path |
+
+### iceberg_namespace_properties
+
+Stores namespace metadata:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| catalog_name | VARCHAR | Catalog identifier |
+| namespace | VARCHAR | Namespace name |
+| property_key | VARCHAR | Property key |
+| property_value | VARCHAR | Property value |
+
+## Connection Pooling
+
+For production deployments, configure connection pooling:
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.jdbc.maximumPoolSize=10 \
+  --conf spark.sql.catalog.my_catalog.jdbc.minimumIdle=2 \
+  --conf spark.sql.catalog.my_catalog.jdbc.connectionTimeout=30000
+```
+
+## SSL/TLS Configuration
+
+### MySQL with SSL
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.uri=jdbc:mysql://host:3306/db \
+  --conf spark.sql.catalog.my_catalog.jdbc.useSSL=true \
+  --conf spark.sql.catalog.my_catalog.jdbc.requireSSL=true \
+  --conf spark.sql.catalog.my_catalog.jdbc.verifyServerCertificate=true \
+  --conf spark.sql.catalog.my_catalog.jdbc.trustCertificateKeyStoreUrl=file:///path/to/truststore \
+  --conf spark.sql.catalog.my_catalog.jdbc.trustCertificateKeyStorePassword=secret
+```
+
+### PostgreSQL with SSL
+
+```shell
+spark-sql \
+  --conf spark.sql.catalog.my_catalog.uri=jdbc:postgresql://host:5432/db?ssl=true \
+  --conf spark.sql.catalog.my_catalog.jdbc.sslmode=verify-full \
+  --conf spark.sql.catalog.my_catalog.jdbc.sslrootcert=/path/to/root.crt
+```
+
+## AWS RDS with IAM Authentication
+
+Use IAM authentication instead of passwords:
+
+```java
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.services.rds.auth.GetIamAuthTokenRequest;
+import com.amazonaws.services.rds.auth.RdsIamAuthTokenGenerator;
+
+// Generate auth token
+RdsIamAuthTokenGenerator generator = RdsIamAuthTokenGenerator.builder()
+    .credentials(new DefaultAWSCredentialsProviderChain())
+    .region("us-west-2")
+    .build();
+
+String authToken = generator.getAuthToken(
+    GetIamAuthTokenRequest.builder()
+        .hostname("mydb.rds.amazonaws.com")
+        .port(3306)
+        .userName("iceberg_user")
+        .build()
+);
+
+// Use token as password
+properties.put("jdbc.password", authToken);
+```
+
+See [AWS RDS IAM Authentication](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.IAMDBAuth.Connecting.Java.html) for complete setup.
+
+## Performance Tuning
+
+<AccordionGroup>
+  <Accordion title="Enable Metadata Caching">
+    ```shell
+    --conf spark.sql.catalog.my_catalog.cache-enabled=true \
+    --conf spark.sql.catalog.my_catalog.cache.expiration-interval-ms=300000
+    ```
+  </Accordion>
+  
+  <Accordion title="Optimize Connection Pool">
+    ```shell
+    --conf spark.sql.catalog.my_catalog.jdbc.maximumPoolSize=20 \
+    --conf spark.sql.catalog.my_catalog.jdbc.minimumIdle=5 \
+    --conf spark.sql.catalog.my_catalog.jdbc.idleTimeout=600000
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Connection Timeouts">
+    ```shell
+    --conf spark.sql.catalog.my_catalog.jdbc.connectionTimeout=5000 \
+    --conf spark.sql.catalog.my_catalog.jdbc.validationTimeout=3000
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Migration from Hive
+
+Migrate existing Hive tables to JDBC catalog:
+
+```sql
+-- Export Hive table metadata
+CREATE TABLE jdbc_catalog.db.my_table
+USING iceberg
+AS SELECT * FROM hive_catalog.db.my_table;
+
+-- Or register existing Iceberg table
+CALL jdbc_catalog.system.register_table(
+  table => 'db.my_table',
+  metadata_file => 's3://bucket/path/to/metadata/v1.metadata.json'
+);
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Connection Refused">
+    Verify:
+    - Database is running and accessible
+    - Firewall rules allow connections
+    - JDBC driver is in classpath
+    - Connection string is correct
+  </Accordion>
+  
+  <Accordion title="Authentication Failed">
+    Check:
+    - Username and password are correct
+    - User has CREATE, SELECT, INSERT, UPDATE, DELETE permissions
+    - SSL/TLS configuration if required
+  </Accordion>
+  
+  <Accordion title="Table Not Found">
+    Ensure:
+    - Catalog schema exists in database
+    - Tables were created with correct catalog
+    - Namespace exists
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+1. **Use connection pooling** for production workloads
+2. **Enable SSL/TLS** for secure connections
+3. **Regular backups** of the catalog database
+4. **Monitor database performance** for slow queries
+5. **Use IAM authentication** when available (AWS RDS)
+6. **Separate warehouse storage** from catalog database
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Nessie Catalog" icon="git-branch" href="/catalogs/nessie">
+    Git-like versioning for data lakes
+  </Card>
+  
+  <Card title="Custom Catalog" icon="code" href="/catalogs/custom-catalog">
+    Build your own catalog implementation
+  </Card>
+</CardGroup>
