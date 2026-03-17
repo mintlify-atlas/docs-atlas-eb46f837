@@ -9,8 +9,8 @@
   },
   "fonts": {
     "heading": {
-      "family": "Arimo",
-      "weight": 400
+      "family": "Nunito Sans",
+      "weight": 500
     },
     "body": {
       "family": "Nunito Sans",
